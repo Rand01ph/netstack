@@ -22,8 +22,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/google/netstack/tcpip/buffer"
-	"github.com/google/netstack/waiter"
+	"github.com/FlowerWrong/netstack/tcpip/buffer"
+	"github.com/FlowerWrong/netstack/waiter"
 )
 
 // Error represents an error in the netstack error space. Using a special type

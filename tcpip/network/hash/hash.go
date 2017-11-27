@@ -10,7 +10,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/google/netstack/tcpip/header"
+	"github.com/FlowerWrong/netstack/tcpip/header"
 )
 
 var hashIV = RandN32(1)[0]

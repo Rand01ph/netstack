@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/netstack/tcpip/buffer"
+	"github.com/FlowerWrong/netstack/tcpip/buffer"
 )
 
 // DefaultReassembleTimeout is based on the reassembling timeout suggest in RFC 791 (4.25 minutes).

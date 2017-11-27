@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/netstack/tcpip"
+	"github.com/FlowerWrong/netstack/tcpip"
 )
 
 type testaddr struct {

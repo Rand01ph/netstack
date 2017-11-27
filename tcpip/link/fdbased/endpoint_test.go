@@ -9,8 +9,8 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/google/netstack/tcpip/buffer"
-	"github.com/google/netstack/tcpip/header"
+	"github.com/FlowerWrong/netstack/tcpip/buffer"
+	"github.com/FlowerWrong/netstack/tcpip/header"
 )
 
 func TestBufConfigMaxLength(t *testing.T) {

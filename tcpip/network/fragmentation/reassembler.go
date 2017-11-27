@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/netstack/tcpip/buffer"
+	"github.com/FlowerWrong/netstack/tcpip/buffer"
 )
 
 type hole struct {

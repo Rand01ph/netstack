@@ -7,9 +7,9 @@ package unix
 import (
 	"sync"
 
-	"github.com/google/netstack/tcpip"
-	"github.com/google/netstack/tcpip/transport/queue"
-	"github.com/google/netstack/waiter"
+	"github.com/FlowerWrong/netstack/tcpip"
+	"github.com/FlowerWrong/netstack/tcpip/transport/queue"
+	"github.com/FlowerWrong/netstack/waiter"
 )
 
 // UniqueIDProvider generates a sequence of unique identifiers useful for,

@@ -9,9 +9,9 @@ package queue
 import (
 	"sync"
 
-	"github.com/google/netstack/ilist"
-	"github.com/google/netstack/tcpip"
-	"github.com/google/netstack/waiter"
+	"github.com/FlowerWrong/netstack/ilist"
+	"github.com/FlowerWrong/netstack/tcpip"
+	"github.com/FlowerWrong/netstack/waiter"
 )
 
 // Entry implements Linker interface and has both Length and Release methods.

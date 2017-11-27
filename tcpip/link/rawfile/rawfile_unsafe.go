@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/google/netstack/tcpip"
+	"github.com/FlowerWrong/netstack/tcpip"
 )
 
 // TODO: Placed here to avoid breakage caused by coverage

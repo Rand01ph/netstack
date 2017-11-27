@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/netstack/tcpip"
+	"github.com/FlowerWrong/netstack/tcpip"
 )
 
 const linkAddrCacheSize = 512 // max cache entries

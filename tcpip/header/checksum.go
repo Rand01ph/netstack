@@ -7,7 +7,7 @@
 package header
 
 import (
-	"github.com/google/netstack/tcpip"
+	"github.com/FlowerWrong/netstack/tcpip"
 )
 
 // Checksum calculates the checksum (as defined in RFC 1071) of the bytes in the

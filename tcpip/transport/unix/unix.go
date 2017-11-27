@@ -9,11 +9,11 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/google/netstack/ilist"
-	"github.com/google/netstack/tcpip"
-	"github.com/google/netstack/tcpip/buffer"
-	"github.com/google/netstack/tcpip/transport/queue"
-	"github.com/google/netstack/waiter"
+	"github.com/FlowerWrong/netstack/ilist"
+	"github.com/FlowerWrong/netstack/tcpip"
+	"github.com/FlowerWrong/netstack/tcpip/buffer"
+	"github.com/FlowerWrong/netstack/tcpip/transport/queue"
+	"github.com/FlowerWrong/netstack/waiter"
 )
 
 // initialLimit is the starting limit for the socket buffers.

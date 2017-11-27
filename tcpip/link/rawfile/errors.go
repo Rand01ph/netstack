@@ -3,7 +3,7 @@ package rawfile
 import (
 	"syscall"
 
-	"github.com/google/netstack/tcpip"
+	"github.com/FlowerWrong/netstack/tcpip"
 )
 
 var translations = map[syscall.Errno]*tcpip.Error{
