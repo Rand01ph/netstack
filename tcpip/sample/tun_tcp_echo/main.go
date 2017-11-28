@@ -26,6 +26,7 @@ import (
 	"github.com/FlowerWrong/netstack/waiter"
 	"github.com/FlowerWrong/water"
 	"os/exec"
+	"runtime"
 )
 
 func echo(wq *waiter.Queue, ep tcpip.Endpoint) {
@@ -117,9 +118,20 @@ func main() {
 	}
 	log.Printf("Interface Name: %s\n", ifce.Name())
 
-	sargs := fmt.Sprintf("%s 10.0.0.1 10.0.0.2 mtu %d netmask 255.255.255.0 up", "utun2", mtu)
-	if err := execCommand("/sbin/ifconfig", sargs); err != nil {
-		log.Println(err)
+	if runtime.GOOS == "darwin" {
+		sargs := fmt.Sprintf("%s 10.0.0.1 10.0.0.2 mtu %d netmask 255.255.255.0 up", ifce.Name(), mtu)
+		if err := execCommand("/sbin/ifconfig", sargs); err != nil {
+			log.Println(err)
+			return
+		}
+	} else if runtime.GOOS == "linux" {
+		sargs := fmt.Sprintf("%s 10.0.0.1 netmask 255.255.255.0", ifce.Name())
+		if err := execCommand("/sbin/ifconfig", sargs); err != nil {
+			log.Println(err)
+			return
+		}
+	} else {
+		log.Println("not support os")
 		return
 	}
 
