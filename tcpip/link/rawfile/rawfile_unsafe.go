@@ -11,6 +11,8 @@ import (
 	"unsafe"
 
 	"github.com/FlowerWrong/netstack/tcpip"
+	"github.com/FlowerWrong/water"
+	"log"
 )
 
 // TODO: Placed here to avoid breakage caused by coverage
@@ -137,5 +139,18 @@ func BlockingReadv(fd int, iovecs []syscall.Iovec) (int, *tcpip.Error) {
 		if e != 0 && e != syscall.EINTR {
 			return 0, TranslateErrno(e)
 		}
+	}
+}
+
+// 兼容各个操作系统的tun设备
+func Read(ifce *water.Interface, b []byte) (int, *tcpip.Error) {
+	for {
+		n, err := ifce.Read(b)
+		if err != nil {
+			log.Fatal(err)
+			return 0, &tcpip.Error{}
+		}
+		log.Println("read", n, "btyes")
+		return n, nil
 	}
 }

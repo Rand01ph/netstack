@@ -16,15 +16,16 @@ import (
 	"strings"
 	"time"
 
+	"fmt"
 	"github.com/FlowerWrong/netstack/tcpip"
 	"github.com/FlowerWrong/netstack/tcpip/link/fdbased"
-	"github.com/FlowerWrong/netstack/tcpip/link/rawfile"
-	"github.com/FlowerWrong/netstack/tcpip/link/tun"
 	"github.com/FlowerWrong/netstack/tcpip/network/ipv4"
 	"github.com/FlowerWrong/netstack/tcpip/network/ipv6"
 	"github.com/FlowerWrong/netstack/tcpip/stack"
 	"github.com/FlowerWrong/netstack/tcpip/transport/tcp"
 	"github.com/FlowerWrong/netstack/waiter"
+	"github.com/FlowerWrong/water"
+	"os/exec"
 )
 
 func echo(wq *waiter.Queue, ep tcpip.Endpoint) {
@@ -51,16 +52,32 @@ func echo(wq *waiter.Queue, ep tcpip.Endpoint) {
 	}
 }
 
+func execCommand(name, sargs string) error {
+	args := strings.Split(sargs, " ")
+	cmd := exec.Command(name, args...)
+	log.Println("exec command: %s %s", name, sargs)
+	return cmd.Run()
+}
+
+func addRoute(tun string, subnet *net.IPNet) error {
+	ip := subnet.IP
+	maskIP := net.IP(subnet.Mask)
+	sargs := fmt.Sprintf("-n add -net %s -netmask %s -interface %s", ip.String(), maskIP.String(), tun)
+	return execCommand("route", sargs)
+}
+
 func main() {
 	if len(os.Args) != 4 {
 		log.Fatal("Usage: ", os.Args[0], " <tun-device> <local-address> <local-port>")
 	}
 
-	tunName := os.Args[1]
+	// tunName := os.Args[1]
 	addrName := os.Args[2]
 	portName := os.Args[3]
 
 	rand.Seed(time.Now().UnixNano())
+
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	// Parse the IP address. Support both ipv4 and ipv6.
 	parsedAddr := net.ParseIP(addrName)
@@ -89,17 +106,24 @@ func main() {
 	// NIC and address.
 	s := stack.New([]string{ipv4.ProtocolName, ipv6.ProtocolName}, []string{tcp.ProtocolName})
 
-	mtu, err := rawfile.GetMTU(tunName)
+	var mtu uint32 = 1500
+
+	ifce, fd, err := water.New(water.Config{
+		DeviceType: water.TUN,
+	})
 	if err != nil {
 		log.Fatal(err)
+		return
+	}
+	log.Printf("Interface Name: %s\n", ifce.Name())
+
+	sargs := fmt.Sprintf("%s 10.0.0.1 10.0.0.2 mtu %d netmask 255.255.255.0 up", "utun2", mtu)
+	if err := execCommand("/sbin/ifconfig", sargs); err != nil {
+		log.Println(err)
+		return
 	}
 
-	fd, err := tun.Open(tunName)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	linkID := fdbased.New(fd, mtu, nil)
+	linkID := fdbased.New(ifce, fd, mtu, nil)
 	if err := s.CreateNIC(1, linkID); err != nil {
 		log.Fatal(err)
 	}

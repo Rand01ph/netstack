@@ -19,12 +19,15 @@ import (
 	"github.com/FlowerWrong/netstack/tcpip/header"
 	"github.com/FlowerWrong/netstack/tcpip/link/rawfile"
 	"github.com/FlowerWrong/netstack/tcpip/stack"
+	"github.com/FlowerWrong/water"
+	"log"
 )
 
 // BufConfig defines the shape of the vectorised view used to read packets from the NIC.
 var BufConfig = []int{128, 256, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768}
 
 type endpoint struct {
+	ifce *water.Interface
 	// fd is the file descriptor used to send and receive packets.
 	fd int
 
@@ -35,21 +38,22 @@ type endpoint struct {
 	// its end of the communication pipe.
 	closed func(*tcpip.Error)
 
-	vv     *buffer.VectorisedView
-	iovecs []syscall.Iovec
-	views  []buffer.View
+	vv *buffer.VectorisedView
+	// iovecs []syscall.Iovec
+	views []buffer.View
 }
 
 // New creates a new fd-based endpoint.
-func New(fd int, mtu uint32, closed func(*tcpip.Error)) tcpip.LinkEndpointID {
-	syscall.SetNonblock(fd, true)
+func New(ifce *water.Interface, fd int, mtu uint32, closed func(*tcpip.Error)) tcpip.LinkEndpointID {
+	syscall.SetNonblock(fd, false)
 
 	e := &endpoint{
+		ifce:   ifce,
 		fd:     fd,
 		mtu:    mtu,
 		closed: closed,
-		views:  make([]buffer.View, len(BufConfig)),
-		iovecs: make([]syscall.Iovec, len(BufConfig)),
+		views:  make([]buffer.View, 1),
+		// iovecs: make([]syscall.Iovec, 1),
 	}
 	vv := buffer.NewVectorisedView(0, e.views)
 	e.vv = &vv
@@ -83,11 +87,21 @@ func (*endpoint) LinkAddress() tcpip.LinkAddress {
 // currently writable, the packet is dropped.
 func (e *endpoint) WritePacket(_ *stack.Route, hdr *buffer.Prependable, payload buffer.View, protocol tcpip.NetworkProtocolNumber) *tcpip.Error {
 	if payload == nil {
-		return rawfile.NonBlockingWrite(e.fd, hdr.UsedBytes())
-
+		_, err := e.ifce.Write(hdr.UsedBytes())
+		if err != nil {
+			log.Fatal(err)
+			return &tcpip.Error{}
+		}
+		return nil
 	}
 
-	return rawfile.NonBlockingWrite2(e.fd, hdr.UsedBytes(), payload)
+	p := append(hdr.UsedBytes(), payload...)
+	_, err := e.ifce.Write(p)
+	if err != nil {
+		log.Fatal(err)
+		return &tcpip.Error{}
+	}
+	return nil
 }
 
 func (e *endpoint) capViews(n int, buffers []int) int {
@@ -109,19 +123,18 @@ func (e *endpoint) allocateViews(bufConfig []int) {
 		}
 		b := buffer.NewView(bufConfig[i])
 		e.views[i] = b
-		e.iovecs[i] = syscall.Iovec{
-			Base: &b[0],
-			Len:  uint64(len(b)),
-		}
 	}
 }
 
 // dispatch reads one packet from the file descriptor and dispatches it.
 func (e *endpoint) dispatch(d stack.NetworkDispatcher, largeV buffer.View) (bool, *tcpip.Error) {
-	e.allocateViews(BufConfig)
+	customBufConfig := []int{int(e.MTU())}
+	e.allocateViews(customBufConfig)
 
-	n, err := rawfile.BlockingReadv(e.fd, e.iovecs)
+	packet := make([]byte, e.MTU())
+	n, err := rawfile.Read(e.ifce, packet)
 	if err != nil {
+		log.Println(err)
 		return false, err
 	}
 
@@ -129,14 +142,14 @@ func (e *endpoint) dispatch(d stack.NetworkDispatcher, largeV buffer.View) (bool
 		return false, nil
 	}
 
-	used := e.capViews(n, BufConfig)
-	e.vv.SetViews(e.views[:used])
+	e.views[0] = buffer.NewViewFromBytes(packet)
+	e.vv.SetViews(e.views[:])
 	e.vv.SetSize(n)
 
 	// We don't get any indication of what the packet is, so try to guess
 	// if it's an IPv4 or IPv6 packet.
 	var p tcpip.NetworkProtocolNumber
-	switch header.IPVersion(e.views[0]) {
+	switch header.IPVersion(packet) {
 	case header.IPv4Version:
 		p = header.IPv4ProtocolNumber
 	case header.IPv6Version:
@@ -146,11 +159,6 @@ func (e *endpoint) dispatch(d stack.NetworkDispatcher, largeV buffer.View) (bool
 	}
 
 	d.DeliverNetworkPacket(e, "", p, e.vv)
-
-	// Prepare e.views for another packet: release used views.
-	for i := 0; i < used; i++ {
-		e.views[i] = nil
-	}
 
 	return true, nil
 }
