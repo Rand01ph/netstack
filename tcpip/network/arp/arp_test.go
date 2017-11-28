@@ -39,7 +39,7 @@ func newTestContext(t *testing.T) *testContext {
 	if testing.Verbose() {
 		id = sniffer.New(id)
 	}
-	if err := s.CreateNIC(1, id); err != nil {
+	if err := s.CreateNIC(1, id, false, tcpip.Address(""), 0); err != nil {
 		t.Fatalf("CreateNIC failed: %v", err)
 	}
 

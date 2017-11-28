@@ -192,7 +192,7 @@ func (f *fakeTransportProtocol) SetOption(option interface{}) *tcpip.Error {
 func TestTransportReceive(t *testing.T) {
 	id, linkEP := channel.New(10, defaultMTU, "")
 	s := stack.New([]string{"fakeNet"}, []string{"fakeTrans"})
-	if err := s.CreateNIC(1, id); err != nil {
+	if err := s.CreateNIC(1, id, false, tcpip.Address(""), 0); err != nil {
 		t.Fatalf("CreateNIC failed: %v", err)
 	}
 
@@ -252,7 +252,7 @@ func TestTransportReceive(t *testing.T) {
 func TestTransportSend(t *testing.T) {
 	id, _ := channel.New(10, defaultMTU, "")
 	s := stack.New([]string{"fakeNet"}, []string{"fakeTrans"})
-	if err := s.CreateNIC(1, id); err != nil {
+	if err := s.CreateNIC(1, id, false, tcpip.Address(""), 0); err != nil {
 		t.Fatalf("CreateNIC failed: %v", err)
 	}
 

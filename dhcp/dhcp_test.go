@@ -39,7 +39,7 @@ func TestDHCP(t *testing.T) {
 	s := stack.New([]string{ipv4.ProtocolName}, []string{udp.ProtocolName})
 
 	const nicid tcpip.NICID = 1
-	if err := s.CreateNIC(nicid, id); err != nil {
+	if err := s.CreateNIC(nicid, id, false, tcpip.Address(""), 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.AddAddress(nicid, ipv4.ProtocolNumber, "\x00\x00\x00\x00"); err != nil {

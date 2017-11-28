@@ -47,7 +47,7 @@ func newLoopbackStack() (*stack.Stack, *tcpip.Error) {
 	// Create the stack and add a NIC.
 	s := stack.New([]string{ipv4.ProtocolName, ipv6.ProtocolName}, []string{tcp.ProtocolName, udp.ProtocolName})
 
-	if err := s.CreateNIC(NICID, loopback.New()); err != nil {
+	if err := s.CreateNIC(NICID, loopback.New(), false, tcpip.Address(""), 0); err != nil {
 		return nil, err
 	}
 
