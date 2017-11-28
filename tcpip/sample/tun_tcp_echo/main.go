@@ -136,7 +136,7 @@ func main() {
 	}
 
 	linkID := fdbased.New(ifce, fd, mtu, nil)
-	if err := s.CreateNIC(1, linkID); err != nil {
+	if err := s.CreateNIC(1, linkID, true, addr, uint16(localPort)); err != nil {
 		log.Fatal(err)
 	}
 
@@ -167,7 +167,7 @@ func main() {
 		log.Fatal("Bind failed: ", err)
 	}
 
-	if err := ep.Listen(10); err != nil {
+	if err := ep.Listen(1024); err != nil {
 		log.Fatal("Listen failed: ", err)
 	}
 

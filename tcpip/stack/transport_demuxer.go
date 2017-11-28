@@ -9,6 +9,7 @@ import (
 
 	"github.com/FlowerWrong/netstack/tcpip"
 	"github.com/FlowerWrong/netstack/tcpip/buffer"
+	"log"
 )
 
 type protocolIDs struct {
@@ -89,20 +90,20 @@ func (d *transportDemuxer) unregisterEndpoint(netProtos []tcpip.NetworkProtocolN
 
 // deliverPacket attempts to deliver the given packet. Returns true if it found
 // an endpoint, false otherwise.
-func (d *transportDemuxer) deliverPacket(r *Route, protocol tcpip.TransportProtocolNumber, vv *buffer.VectorisedView, id TransportEndpointID) bool {
+func (d *transportDemuxer) deliverPacket(r *Route, protocol tcpip.TransportProtocolNumber, vv *buffer.VectorisedView, id TransportEndpointID, hookedPort uint16) bool {
 	eps, ok := d.protocol[protocolIDs{r.NetProto, protocol}]
 	if !ok {
 		return false
 	}
 
 	eps.mu.RLock()
-	b := d.deliverPacketLocked(r, eps, vv, id)
+	b := d.deliverPacketLocked(r, eps, vv, id, hookedPort)
 	eps.mu.RUnlock()
 
 	return b
 }
 
-func (d *transportDemuxer) deliverPacketLocked(r *Route, eps *transportEndpoints, vv *buffer.VectorisedView, id TransportEndpointID) bool {
+func (d *transportDemuxer) deliverPacketLocked(r *Route, eps *transportEndpoints, vv *buffer.VectorisedView, id TransportEndpointID, hookedPort uint16) bool {
 	// Try to find a match with the id as provided.
 	if ep := eps.endpoints[id]; ep != nil {
 		ep.HandlePacket(r, id, vv)
@@ -129,6 +130,14 @@ func (d *transportDemuxer) deliverPacketLocked(r *Route, eps *transportEndpoints
 
 	// Try to find a match with only the local port.
 	nid.LocalAddress = ""
+	if ep := eps.endpoints[nid]; ep != nil {
+		ep.HandlePacket(r, id, vv)
+		return true
+	}
+
+	// Try to find a match with hooked, just any port
+	nid.LocalAddress = ""
+	nid.LocalPort = hookedPort
 	if ep := eps.endpoints[nid]; ep != nil {
 		ep.HandlePacket(r, id, vv)
 		return true

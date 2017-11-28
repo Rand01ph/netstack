@@ -28,9 +28,13 @@ type NIC struct {
 	primary     map[tcpip.NetworkProtocolNumber]*ilist.List
 	endpoints   map[NetworkEndpointID]*referencedNetworkEndpoint
 	subnets     []tcpip.Subnet
+
+	hooked bool
+	hookedAddress tcpip.Address
+	hookedPort uint16
 }
 
-func newNIC(stack *Stack, id tcpip.NICID, ep LinkEndpoint) *NIC {
+func newNIC(stack *Stack, id tcpip.NICID, ep LinkEndpoint, hooked bool, hookedAddress tcpip.Address, hookedPort uint16) *NIC {
 	return &NIC{
 		stack:     stack,
 		id:        id,
@@ -38,6 +42,9 @@ func newNIC(stack *Stack, id tcpip.NICID, ep LinkEndpoint) *NIC {
 		demux:     newTransportDemuxer(stack),
 		primary:   make(map[tcpip.NetworkProtocolNumber]*ilist.List),
 		endpoints: make(map[NetworkEndpointID]*referencedNetworkEndpoint),
+		hooked: hooked,
+		hookedAddress: hookedAddress,
+		hookedPort: hookedPort,
 	}
 }
 
@@ -220,7 +227,12 @@ func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, remoteLinkAddr tcpip.Lin
 	}
 
 	src, dst := netProto.ParseAddresses(vv.First())
-	id := NetworkEndpointID{dst}
+	var id NetworkEndpointID
+	if n.hooked {
+		id = NetworkEndpointID{n.hookedAddress}
+	} else {
+		id = NetworkEndpointID{dst}
+	}
 
 	n.mu.RLock()
 	ref := n.endpoints[id]
@@ -291,10 +303,10 @@ func (n *NIC) DeliverTransportPacket(r *Route, protocol tcpip.TransportProtocolN
 	}
 
 	id := TransportEndpointID{dstPort, r.LocalAddress, srcPort, r.RemoteAddress}
-	if n.demux.deliverPacket(r, protocol, vv, id) {
+	if n.demux.deliverPacket(r, protocol, vv, id, n.hookedPort) {
 		return
 	}
-	if n.stack.demux.deliverPacket(r, protocol, vv, id) {
+	if n.stack.demux.deliverPacket(r, protocol, vv, id, n.hookedPort) {
 		return
 	}
 

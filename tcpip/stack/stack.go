@@ -183,7 +183,7 @@ func (s *Stack) NewEndpoint(transport tcpip.TransportProtocolNumber, network tcp
 
 // createNIC creates a NIC with the provided id and link-layer endpoint, and
 // optionally enable it.
-func (s *Stack) createNIC(id tcpip.NICID, linkEP tcpip.LinkEndpointID, enabled bool) *tcpip.Error {
+func (s *Stack) createNIC(id tcpip.NICID, linkEP tcpip.LinkEndpointID, enabled bool, hooked bool, hookedAddress tcpip.Address, hookedPort uint16) *tcpip.Error {
 	ep := FindLinkEndpoint(linkEP)
 	if ep == nil {
 		return tcpip.ErrBadLinkEndpoint
@@ -197,7 +197,7 @@ func (s *Stack) createNIC(id tcpip.NICID, linkEP tcpip.LinkEndpointID, enabled b
 		return tcpip.ErrDuplicateNICID
 	}
 
-	n := newNIC(s, id, ep)
+	n := newNIC(s, id, ep, hooked, hookedAddress, hookedPort)
 
 	s.nics[id] = n
 	if enabled {
@@ -208,15 +208,20 @@ func (s *Stack) createNIC(id tcpip.NICID, linkEP tcpip.LinkEndpointID, enabled b
 }
 
 // CreateNIC creates a NIC with the provided id and link-layer endpoint.
-func (s *Stack) CreateNIC(id tcpip.NICID, linkEP tcpip.LinkEndpointID) *tcpip.Error {
-	return s.createNIC(id, linkEP, true)
+func (s *Stack) CreateNIC(id tcpip.NICID, linkEP tcpip.LinkEndpointID, hooked bool, hookedAddress tcpip.Address, hookedPort uint16) *tcpip.Error {
+	return s.createNIC(id, linkEP, true, hooked, hookedAddress, hookedPort)
+}
+
+// findNICById find a NIC by id tcpip.NICID.
+func (s *Stack) findNICById(id tcpip.NICID) *NIC {
+	return s.nics[id]
 }
 
 // CreateDisabledNIC creates a NIC with the provided id and link-layer endpoint,
 // but leave it disable. Stack.EnableNIC must be called before the link-layer
 // endpoint starts delivering packets to it.
-func (s *Stack) CreateDisabledNIC(id tcpip.NICID, linkEP tcpip.LinkEndpointID) *tcpip.Error {
-	return s.createNIC(id, linkEP, false)
+func (s *Stack) CreateDisabledNIC(id tcpip.NICID, linkEP tcpip.LinkEndpointID, hooked bool, hookedAddress tcpip.Address, hookedPort uint16) *tcpip.Error {
+	return s.createNIC(id, linkEP, false, hooked, hookedAddress, hookedPort)
 }
 
 // EnableNIC enables the given NIC so that the link-layer endpoint can start

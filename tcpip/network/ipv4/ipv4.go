@@ -100,13 +100,14 @@ func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload 
 		// fragmented, so we only assign ids to larger packets.
 		id = atomic.AddUint32(&ids[hashRoute(r, protocol)%buckets], 1)
 	}
+
 	ip.Encode(&header.IPv4Fields{
 		IHL:         header.IPv4MinimumSize,
 		TotalLength: length,
 		ID:          uint16(id),
 		TTL:         65,
 		Protocol:    uint8(protocol),
-		SrcAddr:     tcpip.Address(e.address[:]),
+		SrcAddr:     r.LocalAddress,
 		DstAddr:     r.RemoteAddress,
 	})
 	ip.SetChecksum(^ip.CalculateChecksum())
