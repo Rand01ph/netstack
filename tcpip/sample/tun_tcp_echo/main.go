@@ -27,10 +27,35 @@ import (
 	"github.com/FlowerWrong/water"
 	"os/exec"
 	"runtime"
+	"golang.org/x/net/proxy"
+	"io"
 )
 
-func echo(wq *waiter.Queue, ep tcpip.Endpoint) {
+func tunnelRead(ep tcpip.Endpoint, socks5Conn net.Conn) {
 	defer ep.Close()
+	defer socks5Conn.Close()
+
+	buf := make([]byte, 1500)
+
+	for {
+		_, err := socks5Conn.Read(buf)
+		if err != nil {
+			if err == io.EOF {
+				log.Println("read eof from remote")
+				return
+			}
+
+			log.Println(err) // use of closed network connection
+			return
+		}
+
+		ep.Write(buf, nil)
+	}
+}
+
+func tunnel(wq *waiter.Queue, ep tcpip.Endpoint, socks5Conn net.Conn) {
+	defer ep.Close()
+	defer socks5Conn.Close()
 
 	// Create wait queue entry that notifies a channel.
 	waitEntry, notifyCh := waiter.NewChannelEntry(nil)
@@ -48,8 +73,11 @@ func echo(wq *waiter.Queue, ep tcpip.Endpoint) {
 
 			return
 		}
+		log.Println(v)
 
-		ep.Write(v, nil)
+		go tunnelRead(ep, socks5Conn)
+
+		socks5Conn.Write(v)
 	}
 }
 
@@ -60,11 +88,17 @@ func execCommand(name, sargs string) error {
 	return cmd.Run()
 }
 
-func addRoute(tun string, subnet *net.IPNet) error {
+func addOSXRoute(tun string, subnet *net.IPNet) error {
 	ip := subnet.IP
 	maskIP := net.IP(subnet.Mask)
 	sargs := fmt.Sprintf("-n add -net %s -netmask %s -interface %s", ip.String(), maskIP.String(), tun)
 	return execCommand("route", sargs)
+}
+
+func addLinuxRoute(tun string, subnet *net.IPNet) error {
+	ip := subnet.IP
+	sargs := fmt.Sprintf("add %s via %s", ip.String(), tun)
+	return execCommand("ip route", sargs)
 }
 
 func main() {
@@ -130,6 +164,11 @@ func main() {
 			log.Println(err)
 			return
 		}
+
+		//_, ipnet1, _ := net.ParseCIDR("119.23.10.5")
+		//addLinuxRoute("10.0.0.1", ipnet1)
+		//_, ipnet2, _ := net.ParseCIDR("47.90.32.252")
+		//addLinuxRoute("192.168.1.1", ipnet2)
 	} else {
 		log.Println("not support os")
 		return
@@ -187,6 +226,23 @@ func main() {
 			log.Fatal("Accept() failed:", err)
 		}
 
-		go echo(wq, n)
+		// connect to socks5
+		network := "tcp"
+		socks5Addr := "127.0.0.1:1090"
+
+		dialer, socks5Err := proxy.SOCKS5(network, socks5Addr, nil, proxy.Direct)
+		if socks5Err != nil {
+			log.Println(socks5Err)
+			continue
+		}
+		local, _ := n.GetLocalAddress()
+		targetAddr := fmt.Sprintf("%v:%d", local.Addr.To4(), local.Port)
+		conn, connErr := dialer.Dial(network, targetAddr)
+		if connErr != nil {
+			log.Println(connErr)
+			continue
+		}
+
+		go tunnel(wq, n, conn)
 	}
 }
