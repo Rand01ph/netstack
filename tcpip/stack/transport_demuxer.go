@@ -9,7 +9,6 @@ import (
 
 	"github.com/FlowerWrong/netstack/tcpip"
 	"github.com/FlowerWrong/netstack/tcpip/buffer"
-	"log"
 )
 
 type protocolIDs struct {
