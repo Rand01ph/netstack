@@ -12,6 +12,7 @@ import (
 	"github.com/FlowerWrong/netstack/ilist"
 	"github.com/FlowerWrong/netstack/tcpip"
 	"github.com/FlowerWrong/netstack/tcpip/buffer"
+	"log"
 )
 
 // NIC represents a "network interface card" to which the networking stack is
@@ -29,22 +30,22 @@ type NIC struct {
 	endpoints   map[NetworkEndpointID]*referencedNetworkEndpoint
 	subnets     []tcpip.Subnet
 
-	hooked bool
+	hooked        bool
 	hookedAddress tcpip.Address
-	hookedPort uint16
+	hookedPort    uint16
 }
 
 func newNIC(stack *Stack, id tcpip.NICID, ep LinkEndpoint, hooked bool, hookedAddress tcpip.Address, hookedPort uint16) *NIC {
 	return &NIC{
-		stack:     stack,
-		id:        id,
-		linkEP:    ep,
-		demux:     newTransportDemuxer(stack),
-		primary:   make(map[tcpip.NetworkProtocolNumber]*ilist.List),
-		endpoints: make(map[NetworkEndpointID]*referencedNetworkEndpoint),
-		hooked: hooked,
+		stack:         stack,
+		id:            id,
+		linkEP:        ep,
+		demux:         newTransportDemuxer(stack),
+		primary:       make(map[tcpip.NetworkProtocolNumber]*ilist.List),
+		endpoints:     make(map[NetworkEndpointID]*referencedNetworkEndpoint),
+		hooked:        hooked,
 		hookedAddress: hookedAddress,
-		hookedPort: hookedPort,
+		hookedPort:    hookedPort,
 	}
 }
 
@@ -301,6 +302,7 @@ func (n *NIC) DeliverTransportPacket(r *Route, protocol tcpip.TransportProtocolN
 		atomic.AddUint64(&n.stack.stats.MalformedRcvdPackets, 1)
 		return
 	}
+	log.Println(srcPort, dstPort, r.LocalAddress, r.RemoteAddress)
 
 	id := TransportEndpointID{dstPort, r.LocalAddress, srcPort, r.RemoteAddress}
 	if n.demux.deliverPacket(r, protocol, vv, id, n.hookedPort) {

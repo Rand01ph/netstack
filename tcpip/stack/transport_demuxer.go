@@ -9,6 +9,7 @@ import (
 
 	"github.com/FlowerWrong/netstack/tcpip"
 	"github.com/FlowerWrong/netstack/tcpip/buffer"
+	"log"
 )
 
 type protocolIDs struct {
@@ -111,9 +112,17 @@ func (d *transportDemuxer) deliverPacketLocked(r *Route, eps *transportEndpoints
 
 	// Try to find a match with the id minus the local address.
 	nid := id
+	// {7081 8.8.8.8 52512 10.0.0.1}
+	log.Println(id)
+
+	for k, v := range eps.endpoints {
+		// {7080  0 }
+		log.Println(k, v)
+	}
 
 	nid.LocalAddress = ""
 	if ep := eps.endpoints[nid]; ep != nil {
+		log.Println()
 		ep.HandlePacket(r, id, vv)
 		return true
 	}
@@ -123,6 +132,7 @@ func (d *transportDemuxer) deliverPacketLocked(r *Route, eps *transportEndpoints
 	nid.RemoteAddress = ""
 	nid.RemotePort = 0
 	if ep := eps.endpoints[nid]; ep != nil {
+		log.Println()
 		ep.HandlePacket(r, id, vv)
 		return true
 	}
@@ -130,17 +140,23 @@ func (d *transportDemuxer) deliverPacketLocked(r *Route, eps *transportEndpoints
 	// Try to find a match with only the local port.
 	nid.LocalAddress = ""
 	if ep := eps.endpoints[nid]; ep != nil {
+		log.Println()
 		ep.HandlePacket(r, id, vv)
 		return true
 	}
 
 	// Try to find a match with hooked, just any port
 	nid.LocalAddress = ""
+	nid.RemoteAddress = ""
+	nid.RemotePort = 0
 	nid.LocalPort = hookedPort
+	log.Println(nid)
 	if ep := eps.endpoints[nid]; ep != nil {
+		log.Println()
 		ep.HandlePacket(r, id, vv)
 		return true
 	}
+	log.Println()
 
 	return false
 }
