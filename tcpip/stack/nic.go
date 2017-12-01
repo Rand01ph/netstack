@@ -12,7 +12,6 @@ import (
 	"github.com/FlowerWrong/netstack/ilist"
 	"github.com/FlowerWrong/netstack/tcpip"
 	"github.com/FlowerWrong/netstack/tcpip/buffer"
-	"log"
 )
 
 // NIC represents a "network interface card" to which the networking stack is
@@ -302,7 +301,6 @@ func (n *NIC) DeliverTransportPacket(r *Route, protocol tcpip.TransportProtocolN
 		atomic.AddUint64(&n.stack.stats.MalformedRcvdPackets, 1)
 		return
 	}
-	log.Println(srcPort, dstPort, r.LocalAddress, r.RemoteAddress)
 
 	id := TransportEndpointID{dstPort, r.LocalAddress, srcPort, r.RemoteAddress}
 	if n.demux.deliverPacket(r, protocol, vv, id, n.hookedPort) {

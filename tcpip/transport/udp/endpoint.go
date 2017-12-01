@@ -12,7 +12,6 @@ import (
 	"github.com/FlowerWrong/netstack/tcpip/header"
 	"github.com/FlowerWrong/netstack/tcpip/stack"
 	"github.com/FlowerWrong/netstack/waiter"
-	"log"
 )
 
 type udpPacket struct {
@@ -252,9 +251,7 @@ func (e *endpoint) Write(v buffer.View, to *tcpip.FullAddress) (uintptr, *tcpip.
 		dstPort = to.Port
 	}
 
-	log.Println("e.id", e.id)
-	log.Println("UDPNatList[dstPort]", UDPNatList[dstPort])
-	sendUDP(route, v, UDPNatList[dstPort].LocalPort, dstPort)
+	sendUDP(route, v, e.id.LocalPort, dstPort)
 	return uintptr(len(v)), nil
 }
 
@@ -350,10 +347,6 @@ func sendUDP(r *stack.Route, data buffer.View, localPort, remotePort uint16) *tc
 		length += uint16(len(data))
 		xsum = header.Checksum(data, xsum)
 	}
-
-	log.Println("r", r)
-	log.Println("localPort", localPort)
-	log.Println("remotePort", remotePort)
 
 	udp.Encode(&header.UDPFields{
 		SrcPort: localPort,
@@ -683,13 +676,7 @@ func (e *endpoint) HandlePacket(r *stack.Route, id stack.TransportEndpointID, vv
 
 	wasEmpty := e.rcvBufSize == 0
 
-	// {53 8.8.8.8 49479 10.0.0.1}
-	log.Println(id)
 	UDPNatList[id.RemotePort] = id
-
-	for k, v := range UDPNatList {
-		log.Println(k, v)
-	}
 
 	// Push new packet into receive list and increment the buffer size.
 	pkt := &udpPacket{

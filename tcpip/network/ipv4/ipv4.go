@@ -19,8 +19,6 @@ import (
 	"github.com/FlowerWrong/netstack/tcpip/network/fragmentation"
 	"github.com/FlowerWrong/netstack/tcpip/network/hash"
 	"github.com/FlowerWrong/netstack/tcpip/stack"
-	"github.com/FlowerWrong/netstack/tcpip/transport/udp"
-	"log"
 )
 
 const (
@@ -94,13 +92,6 @@ func (e *endpoint) MaxHeaderLength() uint16 {
 
 // WritePacket writes a packet to the given destination address and protocol.
 func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload buffer.View, protocol tcpip.TransportProtocolNumber) *tcpip.Error {
-	var remotePort uint16 = 0
-	if len(hdr.UsedBytes()) > 0 {
-		v := hdr.UsedBytes()
-		remotePort = header.UDP(v).DestinationPort()
-		log.Println("binary.BigEndian.Uint16(hdr.UsedBytes()[0:])", remotePort, udp.UDPNatList[remotePort].LocalAddress)
-	}
-
 	ip := header.IPv4(hdr.Prepend(header.IPv4MinimumSize))
 	length := uint16(hdr.UsedLength() + len(payload))
 	id := uint32(0)
@@ -110,17 +101,13 @@ func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload 
 		id = atomic.AddUint32(&ids[hashRoute(r, protocol)%buckets], 1)
 	}
 
-	log.Println("id", id)
-	log.Println("r", r)
-	log.Println("e", e)
-
 	ip.Encode(&header.IPv4Fields{
 		IHL:         header.IPv4MinimumSize,
 		TotalLength: length,
 		ID:          uint16(id),
 		TTL:         65,
 		Protocol:    uint8(protocol),
-		SrcAddr:     udp.UDPNatList[remotePort].LocalAddress,
+		SrcAddr:     r.LocalAddress,
 		DstAddr:     r.RemoteAddress,
 	})
 	ip.SetChecksum(^ip.CalculateChecksum())
