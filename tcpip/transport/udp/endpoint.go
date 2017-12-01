@@ -26,7 +26,7 @@ type udpPacket struct {
 type endpointState int
 
 const (
-	stateInitial endpointState = iota
+	stateInitial   endpointState = iota
 	stateBound
 	stateConnected
 	stateClosed
@@ -73,7 +73,34 @@ type endpoint struct {
 	effectiveNetProtos []tcpip.NetworkProtocolNumber
 }
 
-var UDPNatList = make(map[uint16]stack.TransportEndpointID)
+// udp local <-> remote
+type udpNat struct {
+	Data map[uint16]stack.TransportEndpointID
+	Lock sync.Mutex
+}
+
+var UDPNatList = udpNat{
+	make(map[uint16]stack.TransportEndpointID),
+	sync.Mutex{},
+}
+
+func (d udpNat) GetUDPNat(k uint16) stack.TransportEndpointID {
+	d.Lock.Lock()
+	defer d.Lock.Unlock()
+	return d.Data[k]
+}
+
+func (d udpNat) SetUDPNat(k uint16, v stack.TransportEndpointID) {
+	d.Lock.Lock()
+	defer d.Lock.Unlock()
+	d.Data[k] = v
+}
+
+func (d udpNat) DelUDPNat(k uint16) {
+	d.Lock.Lock()
+	defer d.Lock.Unlock()
+	delete(d.Data, k)
+}
 
 func newEndpoint(stack *stack.Stack, netProto tcpip.NetworkProtocolNumber, waiterQueue *waiter.Queue) *endpoint {
 	// TODO: Use the send buffer size initialized here.
@@ -676,7 +703,7 @@ func (e *endpoint) HandlePacket(r *stack.Route, id stack.TransportEndpointID, vv
 
 	wasEmpty := e.rcvBufSize == 0
 
-	UDPNatList[id.RemotePort] = id
+	UDPNatList.SetUDPNat(id.RemotePort, id)
 
 	// Push new packet into receive list and increment the buffer size.
 	pkt := &udpPacket{
