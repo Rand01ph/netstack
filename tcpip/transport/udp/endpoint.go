@@ -75,31 +75,31 @@ type endpoint struct {
 
 // udp local <-> remote
 type udpNat struct {
-	Data map[uint16]stack.TransportEndpointID
-	Lock sync.Mutex
+	data    map[uint16]stack.TransportEndpointID
+	rwMutex sync.RWMutex
 }
 
 var UDPNatList = udpNat{
 	make(map[uint16]stack.TransportEndpointID),
-	sync.Mutex{},
+	sync.RWMutex{},
 }
 
 func (d udpNat) GetUDPNat(k uint16) stack.TransportEndpointID {
-	d.Lock.Lock()
-	defer d.Lock.Unlock()
-	return d.Data[k]
+	d.rwMutex.Lock()
+	defer d.rwMutex.Unlock()
+	return d.data[k]
 }
 
 func (d udpNat) SetUDPNat(k uint16, v stack.TransportEndpointID) {
-	d.Lock.Lock()
-	defer d.Lock.Unlock()
-	d.Data[k] = v
+	d.rwMutex.Lock()
+	defer d.rwMutex.Unlock()
+	d.data[k] = v
 }
 
 func (d udpNat) DelUDPNat(k uint16) {
-	d.Lock.Lock()
-	defer d.Lock.Unlock()
-	delete(d.Data, k)
+	d.rwMutex.Lock()
+	defer d.rwMutex.Unlock()
+	delete(d.data, k)
 }
 
 func newEndpoint(stack *stack.Stack, netProto tcpip.NetworkProtocolNumber, waiterQueue *waiter.Queue) *endpoint {
