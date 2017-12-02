@@ -150,7 +150,6 @@ func Read(ifce *water.Interface, b []byte) (int, *tcpip.Error) {
 			log.Fatal(err)
 			return 0, &tcpip.Error{}
 		}
-		log.Println("read", n, "btyes")
 		return n, nil
 	}
 }

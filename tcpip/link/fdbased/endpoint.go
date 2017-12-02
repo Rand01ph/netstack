@@ -87,7 +87,6 @@ func (*endpoint) LinkAddress() tcpip.LinkAddress {
 // currently writable, the packet is dropped.
 func (e *endpoint) WritePacket(_ *stack.Route, hdr *buffer.Prependable, payload buffer.View, protocol tcpip.NetworkProtocolNumber) *tcpip.Error {
 	if payload == nil {
-		log.Println("writed", len(hdr.UsedBytes()), "bytes")
 		_, err := e.ifce.Write(hdr.UsedBytes())
 		if err != nil {
 			log.Fatal(err)
@@ -97,7 +96,6 @@ func (e *endpoint) WritePacket(_ *stack.Route, hdr *buffer.Prependable, payload 
 	}
 
 	p := append(hdr.UsedBytes(), payload...)
-	log.Println("writed", len(p), "bytes")
 	_, err := e.ifce.Write(p)
 	if err != nil {
 		log.Fatal(err)
