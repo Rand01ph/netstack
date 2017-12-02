@@ -18,7 +18,7 @@ type udpPacket struct {
 	udpPacketEntry
 	senderAddress tcpip.FullAddress
 	data          buffer.VectorisedView
-	// views is used as buffer for data when its length is large
+	// views is used as buffer for Data when its length is large
 	// enough to store a VectorisedView.
 	views [8]buffer.View
 }
@@ -75,7 +75,7 @@ type endpoint struct {
 
 // udp local <-> remote
 type udpNat struct {
-	data    map[uint16]stack.TransportEndpointID
+	Data    map[uint16]stack.TransportEndpointID
 	rwMutex sync.RWMutex
 }
 
@@ -87,19 +87,19 @@ var UDPNatList = udpNat{
 func (d udpNat) GetUDPNat(k uint16) stack.TransportEndpointID {
 	d.rwMutex.Lock()
 	defer d.rwMutex.Unlock()
-	return d.data[k]
+	return d.Data[k]
 }
 
 func (d udpNat) SetUDPNat(k uint16, v stack.TransportEndpointID) {
 	d.rwMutex.Lock()
 	defer d.rwMutex.Unlock()
-	d.data[k] = v
+	d.Data[k] = v
 }
 
 func (d udpNat) DelUDPNat(k uint16) {
 	d.rwMutex.Lock()
 	defer d.rwMutex.Unlock()
-	delete(d.data, k)
+	delete(d.Data, k)
 }
 
 func newEndpoint(stack *stack.Stack, netProto tcpip.NetworkProtocolNumber, waiterQueue *waiter.Queue) *endpoint {
@@ -161,8 +161,8 @@ func (e *endpoint) Close() {
 	e.state = stateClosed
 }
 
-// Read reads data from the endpoint. This method does not block if
-// there is no data pending.
+// Read reads Data from the endpoint. This method does not block if
+// there is no Data pending.
 func (e *endpoint) Read(addr *tcpip.FullAddress) (buffer.View, *tcpip.Error) {
 	e.rcvMu.Lock()
 
@@ -188,7 +188,7 @@ func (e *endpoint) Read(addr *tcpip.FullAddress) (buffer.View, *tcpip.Error) {
 	return p.data.ToView(), nil
 }
 
-// prepareForWrite prepares the endpoint for sending data. In particular, it
+// prepareForWrite prepares the endpoint for sending Data. In particular, it
 // binds it if it's still in the initial state. To do so, it must first
 // reacquire the mutex in exclusive mode.
 //
@@ -228,8 +228,8 @@ func (e *endpoint) prepareForWrite(to *tcpip.FullAddress) (retry bool, err *tcpi
 	return true, nil
 }
 
-// Write writes data to the endpoint's peer. This method does not block
-// if the data cannot be written.
+// Write writes Data to the endpoint's peer. This method does not block
+// if the Data cannot be written.
 func (e *endpoint) Write(v buffer.View, to *tcpip.FullAddress) (uintptr, *tcpip.Error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -282,7 +282,7 @@ func (e *endpoint) Write(v buffer.View, to *tcpip.FullAddress) (uintptr, *tcpip.
 	return uintptr(len(v)), nil
 }
 
-// Peek only returns data from a single datagram, so do nothing here.
+// Peek only returns Data from a single datagram, so do nothing here.
 func (e *endpoint) Peek([][]byte) (uintptr, *tcpip.Error) {
 	return 0, nil
 }
@@ -719,7 +719,7 @@ func (e *endpoint) HandlePacket(r *stack.Route, id stack.TransportEndpointID, vv
 
 	e.rcvMu.Unlock()
 
-	// Notify any waiters that there's data to be read now.
+	// Notify any waiters that there's Data to be read now.
 	if wasEmpty {
 		e.waiterQueue.Notify(waiter.EventIn)
 	}
