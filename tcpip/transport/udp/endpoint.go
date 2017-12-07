@@ -26,7 +26,7 @@ type udpPacket struct {
 type endpointState int
 
 const (
-	stateInitial   endpointState = iota
+	stateInitial endpointState = iota
 	stateBound
 	stateConnected
 	stateClosed

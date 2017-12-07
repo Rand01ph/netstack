@@ -12,8 +12,6 @@
 package fdbased
 
 import (
-	"syscall"
-
 	"github.com/FlowerWrong/netstack/tcpip"
 	"github.com/FlowerWrong/netstack/tcpip/buffer"
 	"github.com/FlowerWrong/netstack/tcpip/header"
@@ -21,6 +19,8 @@ import (
 	"github.com/FlowerWrong/netstack/tcpip/stack"
 	"github.com/FlowerWrong/water"
 	"log"
+	"runtime"
+	"syscall"
 )
 
 // BufConfig defines the shape of the vectorised view used to read packets from the NIC.
@@ -45,7 +45,9 @@ type endpoint struct {
 
 // New creates a new fd-based endpoint.
 func New(ifce *water.Interface, fd int, mtu uint32, closed func(*tcpip.Error)) tcpip.LinkEndpointID {
-	syscall.SetNonblock(fd, false)
+	if runtime.GOOS != "windows" {
+		syscall.SetNonblock(fd, false)
+	}
 
 	e := &endpoint{
 		ifce:   ifce,
@@ -200,7 +202,9 @@ func (e *InjectableEndpoint) Inject(protocol tcpip.NetworkProtocolNumber, vv *bu
 
 // NewInjectable creates a new fd-based InjectableEndpoint.
 func NewInjectable(fd int, mtu uint32) (tcpip.LinkEndpointID, *InjectableEndpoint) {
-	syscall.SetNonblock(fd, true)
+	if runtime.GOOS != "windows" {
+		syscall.SetNonblock(fd, true)
+	}
 
 	e := &InjectableEndpoint{endpoint: endpoint{
 		fd:  fd,
