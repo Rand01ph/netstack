@@ -76,12 +76,12 @@ type endpoint struct {
 // udp local <-> remote
 type udpNat struct {
 	Data    map[uint16]stack.TransportEndpointID
-	rwMutex sync.RWMutex
+	rwMutex *sync.RWMutex
 }
 
 var UDPNatList = udpNat{
 	make(map[uint16]stack.TransportEndpointID),
-	sync.RWMutex{},
+	&sync.RWMutex{},
 }
 
 func (d udpNat) GetUDPNat(k uint16) stack.TransportEndpointID {
