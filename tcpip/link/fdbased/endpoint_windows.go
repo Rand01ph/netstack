@@ -42,10 +42,10 @@ type endpoint struct {
 }
 
 // New creates a new fd-based endpoint.
-func New(ifce *water.Interface, fd int, mtu uint32, closed func(*tcpip.Error)) tcpip.LinkEndpointID {
+func New(ifce *water.Interface, mtu uint32, closed func(*tcpip.Error)) tcpip.LinkEndpointID {
 	e := &endpoint{
 		ifce:   ifce,
-		fd:     fd,
+		fd:     ifce.Fd(),
 		mtu:    mtu,
 		closed: closed,
 		views:  make([]buffer.View, 1),
