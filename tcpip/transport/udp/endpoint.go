@@ -85,8 +85,8 @@ var UDPNatList = udpNat{
 }
 
 func (d udpNat) GetUDPNat(k uint16) stack.TransportEndpointID {
-	d.rwMutex.Lock()
-	defer d.rwMutex.Unlock()
+	d.rwMutex.RLock()
+	defer d.rwMutex.RUnlock()
 	return d.Data[k]
 }
 
