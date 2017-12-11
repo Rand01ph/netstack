@@ -121,7 +121,7 @@ func newSender(ep *endpoint, iss, irs seqnum.Value, sndWnd seqnum.Size, mss uint
 	s := &sender{
 		ep:               ep,
 		sndCwnd:          initialCwnd,
-		sndSsthresh:      math.MaxInt64,
+		sndSsthresh:      math.MinInt32,
 		sndWnd:           sndWnd,
 		sndUna:           iss + 1,
 		sndNxt:           iss + 1,
