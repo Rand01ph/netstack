@@ -26,7 +26,7 @@ type udpPacket struct {
 type endpointState int
 
 const (
-	stateInitial   endpointState = iota
+	stateInitial endpointState = iota
 	stateBound
 	stateConnected
 	stateClosed
@@ -677,7 +677,9 @@ func (e *endpoint) HandlePacket(r *stack.Route, id stack.TransportEndpointID, vv
 
 	wasEmpty := e.rcvBufSize == 0
 
-	UDPNatList.Store(id.RemotePort, id)
+	if _, ok := UDPNatList.Load(id.RemotePort); !ok {
+		UDPNatList.Store(id.RemotePort, id)
+	}
 
 	// Push new packet into receive list and increment the buffer size.
 	pkt := &udpPacket{
