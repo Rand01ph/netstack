@@ -76,14 +76,16 @@ type endpoint struct {
 // udp local <-> remote
 var UDPNatList sync.Map
 
+const defaultBufferSize = 208 * 1024
+
 func newEndpoint(stack *stack.Stack, netProto tcpip.NetworkProtocolNumber, waiterQueue *waiter.Queue) *endpoint {
 	// TODO: Use the send buffer size initialized here.
 	return &endpoint{
 		stack:         stack,
 		netProto:      netProto,
 		waiterQueue:   waiterQueue,
-		rcvBufSizeMax: 32 * 1024,
-		sndBufSize:    32 * 1024,
+		rcvBufSizeMax: defaultBufferSize,
+		sndBufSize:    defaultBufferSize,
 	}
 }
 
