@@ -12,15 +12,16 @@
 package fdbased
 
 import (
+	"log"
+	"runtime"
+	"syscall"
+
 	"github.com/FlowerWrong/netstack/tcpip"
 	"github.com/FlowerWrong/netstack/tcpip/buffer"
 	"github.com/FlowerWrong/netstack/tcpip/header"
 	"github.com/FlowerWrong/netstack/tcpip/link/rawfile"
 	"github.com/FlowerWrong/netstack/tcpip/stack"
 	"github.com/FlowerWrong/water"
-	"log"
-	"runtime"
-	"syscall"
 )
 
 // BufConfig defines the shape of the vectorised view used to read packets from the NIC.
@@ -91,7 +92,7 @@ func (e *endpoint) WritePacket(_ *stack.Route, hdr *buffer.Prependable, payload 
 	if payload == nil {
 		_, err := e.ifce.Write(hdr.UsedBytes())
 		if err != nil {
-			log.Fatal(err)
+			log.Println(err)
 			return &tcpip.Error{}
 		}
 		return nil
@@ -100,7 +101,7 @@ func (e *endpoint) WritePacket(_ *stack.Route, hdr *buffer.Prependable, payload 
 	p := append(hdr.UsedBytes(), payload...)
 	_, err := e.ifce.Write(p)
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		return &tcpip.Error{}
 	}
 	return nil
