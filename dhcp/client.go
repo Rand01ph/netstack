@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/FlowerWrong/netstack/tcpip"
-	"github.com/FlowerWrong/netstack/tcpip/buffer"
 	"github.com/FlowerWrong/netstack/tcpip/network/ipv4"
 	"github.com/FlowerWrong/netstack/tcpip/stack"
 	"github.com/FlowerWrong/netstack/tcpip/transport/udp"
@@ -36,7 +35,7 @@ type Client struct {
 
 // NewClient creates a DHCP client.
 //
-// TODO(crawshaw): add s.LinkAddr(nicid) to *stack.Stack.
+// TODO: add s.LinkAddr(nicid) to *stack.Stack.
 func NewClient(s *stack.Stack, nicid tcpip.NICID, linkAddr tcpip.LinkAddress) *Client {
 	return &Client{
 		stack:    s,
@@ -149,7 +148,10 @@ func (c *Client) Request(ctx context.Context, requestedAddr tcpip.Address) error
 		Addr: "\xff\xff\xff\xff",
 		Port: serverPort,
 	}
-	if _, err := ep.Write(buffer.View(h), serverAddr); err != nil {
+	wopts := tcpip.WriteOptions{
+		To: serverAddr,
+	}
+	if _, err := ep.Write(tcpip.SlicePayload(h), wopts); err != nil {
 		return fmt.Errorf("dhcp discovery write: %v", err)
 	}
 
@@ -207,7 +209,7 @@ func (c *Client) Request(ctx context.Context, requestedAddr tcpip.Address) error
 		{optReqIPAddr, []byte(addr)},
 		{optDHCPServer, h.siaddr()},
 	})
-	if _, err := ep.Write([]byte(h), serverAddr); err != nil {
+	if _, err := ep.Write(tcpip.SlicePayload(h), wopts); err != nil {
 		return fmt.Errorf("dhcp discovery write: %v", err)
 	}
 

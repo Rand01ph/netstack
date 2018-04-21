@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/FlowerWrong/netstack/tcpip"
 	"github.com/FlowerWrong/netstack/tcpip/buffer"
 	"github.com/FlowerWrong/netstack/tcpip/checker"
 	"github.com/FlowerWrong/netstack/tcpip/header"
@@ -132,7 +133,7 @@ func timeStampEnabledAccept(t *testing.T, cookieEnabled bool, wndScale int, wndS
 	view := buffer.NewView(len(data))
 	copy(view, data)
 
-	if _, err := c.EP.Write(view, nil); err != nil {
+	if _, err := c.EP.Write(tcpip.SlicePayload(view), tcpip.WriteOptions{}); err != nil {
 		t.Fatalf("Unexpected error from Write: %v", err)
 	}
 
@@ -167,7 +168,7 @@ func TestTimeStampEnabledAccept(t *testing.T) {
 		wndSize       uint16
 	}{
 		{true, -1, 0xffff}, // When cookie is used window scaling is disabled.
-		{false, 2, 0xd000},
+		{false, 5, 0x8000}, // 0x8000 * 2^5 = 1<<20 = 1MB window (the default).
 	}
 	for _, tc := range testCases {
 		timeStampEnabledAccept(t, tc.cookieEnabled, tc.wndScale, tc.wndSize)
@@ -195,7 +196,7 @@ func timeStampDisabledAccept(t *testing.T, cookieEnabled bool, wndScale int, wnd
 	view := buffer.NewView(len(data))
 	copy(view, data)
 
-	if _, err := c.EP.Write(view, nil); err != nil {
+	if _, err := c.EP.Write(tcpip.SlicePayload(view), tcpip.WriteOptions{}); err != nil {
 		t.Fatalf("Unexpected error from Write: %v", err)
 	}
 
@@ -224,7 +225,7 @@ func TestTimeStampDisabledAccept(t *testing.T) {
 		wndSize       uint16
 	}{
 		{true, -1, 0xffff}, // When cookie is used window scaling is disabled.
-		{false, 2, 0xd000},
+		{false, 5, 0x8000}, // 0x8000 * 2^5 = 1<<20 = 1MB window (the default).
 	}
 	for _, tc := range testCases {
 		timeStampDisabledAccept(t, tc.cookieEnabled, tc.wndScale, tc.wndSize)

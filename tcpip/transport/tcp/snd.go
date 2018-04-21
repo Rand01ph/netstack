@@ -16,11 +16,11 @@ import (
 )
 
 const (
-	// minRTO is the minimium allowed value for the retransmit timeout.
+	// minRTO is the minimum allowed value for the retransmit timeout.
 	minRTO = 200 * time.Millisecond
 
-	// initalCwnd is the initial congestion window.
-	initialCwnd = 10
+	// InitialCwnd is the initial congestion window.
+	InitialCwnd = 10
 )
 
 // sender holds the state necessary to send TCP segments.
@@ -120,8 +120,8 @@ type fastRecovery struct {
 func newSender(ep *endpoint, iss, irs seqnum.Value, sndWnd seqnum.Size, mss uint16, sndWndScale int) *sender {
 	s := &sender{
 		ep:               ep,
-		sndCwnd:          initialCwnd,
-		sndSsthresh:      math.MinInt32,
+		sndCwnd:          InitialCwnd,
+		sndSsthresh:      math.MaxInt32,
 		sndWnd:           sndWnd,
 		sndUna:           iss + 1,
 		sndNxt:           iss + 1,
@@ -139,18 +139,63 @@ func newSender(ep *endpoint, iss, irs seqnum.Value, sndWnd seqnum.Size, mss uint
 		s.sndWndScale = uint8(sndWndScale)
 	}
 
-	m := int(ep.route.MTU()) - header.TCPMinimumSize
-	// Adjust the maxPayloadsize to account for the timestamp option.
-	if ep.sendTSOk {
-		m -= header.TCPTimeStampOptionSize
-	}
-	if m < s.maxPayloadSize {
-		s.maxPayloadSize = m
-	}
+	s.updateMaxPayloadSize(int(ep.route.MTU()), 0)
 
 	s.resendTimer.init(&s.resendWaker)
 
 	return s
+}
+
+// updateMaxPayloadSize updates the maximum payload size based on the given
+// MTU. If this is in response to "packet too big" control packets (indicated
+// by the count argument), it also reduces the number of oustanding packets and
+// attempts to retransmit the first packet above the MTU size.
+func (s *sender) updateMaxPayloadSize(mtu, count int) {
+	m := mtu - header.TCPMinimumSize
+
+	// Calculate the maximum option size.
+	var maxSackBlocks [header.TCPMaxSACKBlocks]header.SACKBlock
+	options := s.ep.makeOptions(maxSackBlocks[:])
+	m -= len(options)
+	putOptions(options)
+
+	// We don't adjust up for now.
+	if m >= s.maxPayloadSize {
+		return
+	}
+
+	// Make sure we can transmit at least one byte.
+	if m <= 0 {
+		m = 1
+	}
+
+	s.maxPayloadSize = m
+
+	s.outstanding -= count
+	if s.outstanding < 0 {
+		s.outstanding = 0
+	}
+
+	// Rewind writeNext to the first segment exceeding the MTU. Do nothing
+	// if it is already before such a packet.
+	for seg := s.writeList.Front(); seg != nil; seg = seg.Next() {
+		if seg == s.writeNext {
+			// We got to writeNext before we could find a segment
+			// exceeding the MTU.
+			break
+		}
+
+		if seg.data.Size() > m {
+			// We found a segment exceeding the MTU. Rewind
+			// writeNext and try to retransmit it.
+			s.writeNext = seg
+			break
+		}
+	}
+
+	// Since we likely reduced the number of outstanding packets, we may be
+	// ready to send some more.
+	s.sendData()
 }
 
 // sendAck sends an ACK segment.
@@ -222,7 +267,7 @@ func (s *sender) retransmitTimerExpired() bool {
 	s.rto *= 2
 
 	if s.fr.active {
-		// We were attempting fast recovery but were not successfull.
+		// We were attempting fast recovery but were not successful.
 		// Leave the state. We don't need to update ssthresh because it
 		// has already been updated when entered fast-recovery.
 		s.leaveFastRecovery()
@@ -231,7 +276,9 @@ func (s *sender) retransmitTimerExpired() bool {
 		s.reduceSlowStartThreshold()
 	}
 
-	// Reduce the congestion window to 1, i.e., enter slow-start.
+	// Reduce the congestion window to 1, i.e., enter slow-start. Per
+	// RFC 5681, page 7, we must use 1 regardless of the value of the
+	// initial congestion window.
 	s.sndCwnd = 1
 
 	// Mark the next segment to be sent as the first unacknowledged one and
@@ -257,8 +304,8 @@ func (s *sender) sendData() {
 	// transmission if the TCP has not sent data in the interval exceeding
 	// the retrasmission timeout."
 	if !s.fr.active && time.Now().Sub(s.lastSendTime) > s.rto {
-		if s.sndCwnd > initialCwnd {
-			s.sndCwnd = initialCwnd
+		if s.sndCwnd > InitialCwnd {
+			s.sndCwnd = InitialCwnd
 		}
 	}
 
@@ -277,8 +324,23 @@ func (s *sender) sendData() {
 
 		var segEnd seqnum.Value
 		if seg.data.Size() == 0 {
-			// We're sending a FIN.
-			seg.flags = flagAck | flagFin
+			seg.flags = flagAck
+
+			s.ep.rcvListMu.Lock()
+			rcvBufUsed := s.ep.rcvBufUsed
+			s.ep.rcvListMu.Unlock()
+
+			s.ep.mu.Lock()
+			// We're sending a FIN by default
+			fl := flagFin
+			if (s.ep.shutdownFlags&tcpip.ShutdownRead) != 0 && rcvBufUsed > 0 {
+				// If there is unread data we must send a RST.
+				// For more information see RFC 2525 section 2.17.
+				fl = flagRst
+			}
+			s.ep.mu.Unlock()
+			seg.flags |= uint8(fl)
+
 			segEnd = seg.sequenceNumber.Add(1)
 		} else {
 			// We're sending a non-FIN segment.
@@ -335,7 +397,7 @@ func (s *sender) enterFastRecovery() {
 func (s *sender) leaveFastRecovery() {
 	s.fr.active = false
 
-	// Deflate cwnd. It had been artifically inflated when new dups arrived.
+	// Deflate cwnd. It had been artificially inflated when new dups arrived.
 	s.sndCwnd = s.sndSsthresh
 }
 
@@ -351,7 +413,7 @@ func (s *sender) checkDuplicateAck(seg *segment) bool {
 			return false
 		}
 
-		// Leave fast recovery if it acknowleges all the data covered by
+		// Leave fast recovery if it acknowledges all the data covered by
 		// this fast recovery session.
 		if s.fr.last.LessThan(ack) {
 			s.leaveFastRecovery()

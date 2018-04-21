@@ -21,6 +21,10 @@ const (
 	fakeNetNumber    tcpip.NetworkProtocolNumber = math.MaxUint32
 	fakeNetHeaderLen                             = 12
 
+	// fakeControlProtocol is used for control packets that represent
+	// destination port unreachable.
+	fakeControlProtocol tcpip.TransportProtocolNumber = 2
+
 	// defaultMTU is the MTU, in bytes, used throughout the tests, except
 	// where another value is explicitly used. It is chosen to match the MTU
 	// of loopback interfaces on linux systems.
@@ -62,6 +66,18 @@ func (f *fakeNetworkEndpoint) HandlePacket(r *stack.Route, vv *buffer.Vectorised
 	b := vv.First()
 	vv.TrimFront(fakeNetHeaderLen)
 
+	// Handle control packets.
+	if b[2] == uint8(fakeControlProtocol) {
+		nb := vv.First()
+		if len(nb) < fakeNetHeaderLen {
+			return
+		}
+
+		vv.TrimFront(fakeNetHeaderLen)
+		f.dispatcher.DeliverTransportControlPacket(tcpip.Address(nb[1:2]), tcpip.Address(nb[0:1]), fakeNetNumber, tcpip.TransportProtocolNumber(nb[2]), stack.ControlPortUnreachable, 0, vv)
+		return
+	}
+
 	// Dispatch the packet to the transport protocol.
 	f.dispatcher.DeliverTransportPacket(r, tcpip.TransportProtocolNumber(b[2]), vv)
 }
@@ -72,6 +88,10 @@ func (f *fakeNetworkEndpoint) MaxHeaderLength() uint16 {
 
 func (f *fakeNetworkEndpoint) PseudoHeaderChecksum(protocol tcpip.TransportProtocolNumber, dstAddr tcpip.Address) uint16 {
 	return 0
+}
+
+func (f *fakeNetworkEndpoint) Capabilities() stack.LinkEndpointCapabilities {
+	return f.linkEP.Capabilities()
 }
 
 func (f *fakeNetworkEndpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload buffer.View, protocol tcpip.TransportProtocolNumber) *tcpip.Error {
@@ -137,6 +157,16 @@ func (f *fakeNetworkProtocol) SetOption(option interface{}) *tcpip.Error {
 		return nil
 	case fakeNetInvalidValueOption:
 		return tcpip.ErrInvalidOptionValue
+	default:
+		return tcpip.ErrUnknownProtocolOption
+	}
+}
+
+func (f *fakeNetworkProtocol) Option(option interface{}) *tcpip.Error {
+	switch v := option.(type) {
+	case *fakeNetGoodOption:
+		*v = fakeNetGoodOption(f.opts.good)
+		return nil
 	default:
 		return tcpip.ErrUnknownProtocolOption
 	}
@@ -573,6 +603,49 @@ func TestPromiscuousMode(t *testing.T) {
 	}
 }
 
+func TestAddressSpoofing(t *testing.T) {
+	srcAddr := tcpip.Address("\x01")
+	dstAddr := tcpip.Address("\x02")
+
+	s := stack.New([]string{"fakeNet"}, nil)
+
+	id, _ := channel.New(10, defaultMTU, "")
+	if err := s.CreateNIC(1, id); err != nil {
+		t.Fatalf("CreateNIC failed: %v", err)
+	}
+
+	if err := s.AddAddress(1, fakeNetNumber, dstAddr); err != nil {
+		t.Fatalf("AddAddress failed: %v", err)
+	}
+
+	s.SetRouteTable([]tcpip.Route{
+		{"\x00", "\x00", "\x00", 1},
+	})
+
+	// With address spoofing disabled, FindRoute does not permit an address
+	// that was not added to the NIC to be used as the source.
+	r, err := s.FindRoute(0, srcAddr, dstAddr, fakeNetNumber)
+	if err == nil {
+		t.Errorf("FindRoute succeeded with route %+v when it should have failed", r)
+	}
+
+	// With address spoofing enabled, FindRoute permits any address to be used
+	// as the source.
+	if err := s.SetSpoofing(1, true); err != nil {
+		t.Fatalf("SetSpoofing failed: %v", err)
+	}
+	r, err = s.FindRoute(0, srcAddr, dstAddr, fakeNetNumber)
+	if err != nil {
+		t.Fatalf("FindRoute failed: %v", err)
+	}
+	if r.LocalAddress != srcAddr {
+		t.Errorf("Route has wrong local address: got %v, wanted %v", r.LocalAddress, srcAddr)
+	}
+	if r.RemoteAddress != dstAddr {
+		t.Errorf("Route has wrong remote address: got %v, wanted %v", r.RemoteAddress, dstAddr)
+	}
+}
+
 // Set the subnet, then check that packet is delivered.
 func TestSubnetAcceptsMatchingPacket(t *testing.T) {
 	s := stack.New([]string{"fakeNet"}, nil)
@@ -640,7 +713,7 @@ func TestSubnetRejectsNonmatchingPacket(t *testing.T) {
 	}
 }
 
-func TestSetOption(t *testing.T) {
+func TestNetworkOptions(t *testing.T) {
 	s := stack.New([]string{"fakeNet"}, []string{})
 
 	// Try an unsupported network protocol.
@@ -650,21 +723,29 @@ func TestSetOption(t *testing.T) {
 
 	testCases := []struct {
 		option   interface{}
-		want     *tcpip.Error
+		wantErr  *tcpip.Error
 		verifier func(t *testing.T, p stack.NetworkProtocol)
 	}{
 		{fakeNetGoodOption(true), nil, func(t *testing.T, p stack.NetworkProtocol) {
+			t.Helper()
 			fakeNet := p.(*fakeNetworkProtocol)
 			if fakeNet.opts.good != true {
 				t.Fatalf("fakeNet.opts.good = false, want = true")
+			}
+			var v fakeNetGoodOption
+			if err := s.NetworkProtocolOption(fakeNetNumber, &v); err != nil {
+				t.Fatalf("s.NetworkProtocolOption(fakeNetNumber, &v) = %v, want = nil, where v is option %T", v, err)
+			}
+			if v != true {
+				t.Fatalf("s.NetworkProtocolOption(fakeNetNumber, &v) returned v = %v, want = true", v)
 			}
 		}},
 		{fakeNetBadOption(true), tcpip.ErrUnknownProtocolOption, nil},
 		{fakeNetInvalidValueOption(1), tcpip.ErrInvalidOptionValue, nil},
 	}
 	for _, tc := range testCases {
-		if got := s.SetNetworkProtocolOption(fakeNetNumber, tc.option); tc.want != got {
-			t.Errorf("s.SetOption(fakeNet, %v) = %v, want = %v", tc.option, got, tc.want)
+		if got := s.SetNetworkProtocolOption(fakeNetNumber, tc.option); got != tc.wantErr {
+			t.Errorf("s.SetNetworkProtocolOption(fakeNet, %v) = %v, want = %v", tc.option, got, tc.wantErr)
 		}
 		if tc.verifier != nil {
 			tc.verifier(t, s.NetworkProtocolInstance(fakeNetNumber))
