@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/FlowerWrong/netstack/tcpip/buffer"
 	"github.com/FlowerWrong/netstack/waiter"
@@ -30,6 +31,9 @@ import (
 
 // Error represents an error in the netstack error space. Using a special type
 // ensures that errors outside of this space are not accidentally introduced.
+//
+// Note: to support save / restore, it is important that all tcpip errors have
+// distinct error messages.
 type Error struct {
 	string
 }
@@ -72,6 +76,7 @@ var (
 	ErrInvalidOptionValue    = &Error{"invalid option value specified"}
 	ErrNoLinkAddress         = &Error{"no remote link address"}
 	ErrBadAddress            = &Error{"bad address"}
+	ErrNetworkUnreachable    = &Error{"network is unreachable"}
 )
 
 // Errors related to Subnet
@@ -79,6 +84,35 @@ var (
 	errSubnetLengthMismatch = errors.New("subnet length of address and mask differ")
 	errSubnetAddressMasked  = errors.New("subnet address has bits set outside the mask")
 )
+
+// ErrSaveRejection indicates a failed save due to unsupported networking state.
+// This type of errors is only used for save logic.
+type ErrSaveRejection struct {
+	Err error
+}
+
+// Error returns a sensible description of the save rejection error.
+func (e ErrSaveRejection) Error() string {
+	return "save rejected due to unsupported networking state: " + e.Err.Error()
+}
+
+// A Clock provides the current time.
+//
+// Times returned by a Clock should always be used for application-visible
+// time, but never for netstack internal timekeeping.
+type Clock interface {
+	// NowNanoseconds returns the current real time as a number of
+	// nanoseconds since some epoch.
+	NowNanoseconds() int64
+}
+
+// StdClock implements Clock with the time package.
+type StdClock struct{}
+
+// NowNanoseconds implements Clock.NowNanoseconds.
+func (*StdClock) NowNanoseconds() int64 {
+	return time.Now().UnixNano()
+}
 
 // Address is a byte slice cast as a string that represents the address of a
 // network node. Or, in the case of unix endpoints, it may represent a path.
@@ -210,6 +244,16 @@ func (s SlicePayload) Size() int {
 	return len(s)
 }
 
+// A ControlMessages contains socket control messages for IP sockets.
+type ControlMessages struct {
+	// HasTimestamp indicates whether Timestamp is valid/set.
+	HasTimestamp bool
+
+	// Timestamp is the time (in ns) that the last packed used to create
+	// the read data was received.
+	Timestamp int64
+}
+
 // Endpoint is the interface implemented by transport protocols (e.g., tcp, udp)
 // that exposes functionality like read, write, connect, etc. to users of the
 // networking stack.
@@ -219,9 +263,13 @@ type Endpoint interface {
 	Close()
 
 	// Read reads data from the endpoint and optionally returns the sender.
-	// This method does not block if there is no data pending.
-	// It will also either return an error or data, never both.
-	Read(*FullAddress) (buffer.View, *Error)
+	//
+	// This method does not block if there is no data pending. It will also
+	// either return an error or data, never both.
+	//
+	// A timestamp (in ns) is optionally returned. A zero value indicates
+	// that no timestamp was available.
+	Read(*FullAddress) (buffer.View, ControlMessages, *Error)
 
 	// Write writes data to the endpoint's peer. This method does not block if
 	// the data cannot be written.
@@ -238,7 +286,10 @@ type Endpoint interface {
 	// Peek reads data without consuming it from the endpoint.
 	//
 	// This method does not block if there is no data pending.
-	Peek([][]byte) (uintptr, *Error)
+	//
+	// A timestamp (in ns) is optionally returned. A zero value indicates
+	// that no timestamp was available.
+	Peek([][]byte) (uintptr, ControlMessages, *Error)
 
 	// Connect connects the endpoint to its peer. Specifying a NIC is
 	// optional.
@@ -346,6 +397,10 @@ type ReuseAddressOption int
 //
 // Only supported on Unix sockets.
 type PasscredOption int
+
+// TimestampOption is used by SetSockOpt/GetSockOpt to specify whether
+// SO_TIMESTAMP socket control messages are enabled.
+type TimestampOption int
 
 // TCPInfoOption is used by GetSockOpt to expose TCP statistics.
 //

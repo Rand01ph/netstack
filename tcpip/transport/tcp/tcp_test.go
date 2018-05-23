@@ -6,6 +6,7 @@ package tcp_test
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 	"time"
 
@@ -146,7 +147,7 @@ func TestSimpleReceive(t *testing.T) {
 	c.WQ.EventRegister(&we, waiter.EventIn)
 	defer c.WQ.EventUnregister(&we)
 
-	if _, err := c.EP.Read(nil); err != tcpip.ErrWouldBlock {
+	if _, _, err := c.EP.Read(nil); err != tcpip.ErrWouldBlock {
 		t.Fatalf("Unexpected error from Read: %v", err)
 	}
 
@@ -168,7 +169,7 @@ func TestSimpleReceive(t *testing.T) {
 	}
 
 	// Receive data.
-	v, err := c.EP.Read(nil)
+	v, _, err := c.EP.Read(nil)
 	if err != nil {
 		t.Fatalf("Unexpected error from Read: %v", err)
 	}
@@ -198,7 +199,7 @@ func TestOutOfOrderReceive(t *testing.T) {
 	c.WQ.EventRegister(&we, waiter.EventIn)
 	defer c.WQ.EventUnregister(&we)
 
-	if _, err := c.EP.Read(nil); err != tcpip.ErrWouldBlock {
+	if _, _, err := c.EP.Read(nil); err != tcpip.ErrWouldBlock {
 		t.Fatalf("Unexpected error from Read: %v", err)
 	}
 
@@ -225,7 +226,7 @@ func TestOutOfOrderReceive(t *testing.T) {
 
 	// Wait 200ms and check that no data has been received.
 	time.Sleep(200 * time.Millisecond)
-	if _, err := c.EP.Read(nil); err != tcpip.ErrWouldBlock {
+	if _, _, err := c.EP.Read(nil); err != tcpip.ErrWouldBlock {
 		t.Fatalf("Unexpected error from Read: %v", err)
 	}
 
@@ -242,7 +243,7 @@ func TestOutOfOrderReceive(t *testing.T) {
 	// Receive data.
 	read := make([]byte, 0, 6)
 	for len(read) < len(data) {
-		v, err := c.EP.Read(nil)
+		v, _, err := c.EP.Read(nil)
 		if err != nil {
 			if err == tcpip.ErrWouldBlock {
 				// Wait for receive to be notified.
@@ -283,7 +284,7 @@ func TestOutOfOrderFlood(t *testing.T) {
 	opt := tcpip.ReceiveBufferSizeOption(10)
 	c.CreateConnected(789, 30000, &opt)
 
-	if _, err := c.EP.Read(nil); err != tcpip.ErrWouldBlock {
+	if _, _, err := c.EP.Read(nil); err != tcpip.ErrWouldBlock {
 		t.Fatalf("Unexpected error from Read: %v", err)
 	}
 
@@ -360,7 +361,7 @@ func TestRstOnCloseWithUnreadData(t *testing.T) {
 	c.WQ.EventRegister(&we, waiter.EventIn)
 	defer c.WQ.EventUnregister(&we)
 
-	if _, err := c.EP.Read(nil); err != tcpip.ErrWouldBlock {
+	if _, _, err := c.EP.Read(nil); err != tcpip.ErrWouldBlock {
 		t.Fatalf("Unexpected error from Read: %v", err)
 	}
 
@@ -413,7 +414,7 @@ func TestFullWindowReceive(t *testing.T) {
 	c.WQ.EventRegister(&we, waiter.EventIn)
 	defer c.WQ.EventUnregister(&we)
 
-	_, err := c.EP.Read(nil)
+	_, _, err := c.EP.Read(nil)
 	if err != tcpip.ErrWouldBlock {
 		t.Fatalf("Unexpected error from Read: %v", err)
 	}
@@ -448,7 +449,7 @@ func TestFullWindowReceive(t *testing.T) {
 	)
 
 	// Receive data and check it.
-	v, err := c.EP.Read(nil)
+	v, _, err := c.EP.Read(nil)
 	if err != nil {
 		t.Fatalf("Unexpected error from Read: %v", err)
 	}
@@ -486,7 +487,7 @@ func TestNoWindowShrinking(t *testing.T) {
 	c.WQ.EventRegister(&we, waiter.EventIn)
 	defer c.WQ.EventUnregister(&we)
 
-	_, err := c.EP.Read(nil)
+	_, _, err := c.EP.Read(nil)
 	if err != tcpip.ErrWouldBlock {
 		t.Fatalf("Unexpected error from Read: %v", err)
 	}
@@ -550,7 +551,7 @@ func TestNoWindowShrinking(t *testing.T) {
 	// Receive data and check it.
 	read := make([]byte, 0, 10)
 	for len(read) < len(data) {
-		v, err := c.EP.Read(nil)
+		v, _, err := c.EP.Read(nil)
 		if err != nil {
 			t.Fatalf("Unexpected error from Read: %v", err)
 		}
@@ -953,7 +954,7 @@ func TestZeroScaledWindowReceive(t *testing.T) {
 	}
 
 	// Read some data. An ack should be sent in response to that.
-	v, err := c.EP.Read(nil)
+	v, _, err := c.EP.Read(nil)
 	if err != nil {
 		t.Fatalf("Unexpected error from Read: %v", err)
 	}
@@ -1336,7 +1337,7 @@ func TestReceiveOnResetConnection(t *testing.T) {
 
 loop:
 	for {
-		switch _, err := c.EP.Read(nil); err {
+		switch _, _, err := c.EP.Read(nil); err {
 		case nil:
 			t.Fatalf("Unexpected success.")
 		case tcpip.ErrWouldBlock:
@@ -1996,15 +1997,27 @@ func DisabledTestFastRecovery(t *testing.T) {
 		c.CheckNoPacketTimeout("More packets received than expected for this cwnd.", 50*time.Millisecond)
 	}
 
-	// Send 10 duplicate acks. This should force an immediate retransmit of
-	// the pending packet, and inflation of cwnd to expected/2+7.
+	// Send 3 duplicate acks. This should force an immediate retransmit of
+	// the pending packet and put the sender into fast recovery.
 	rtxOffset := bytesRead - maxPayload*expected
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 3; i++ {
 		c.SendAck(790, rtxOffset)
 	}
 
 	// Receive the retransmitted packet.
 	c.ReceiveAndCheckPacket(data, rtxOffset, maxPayload)
+
+	// Now send 7 mode duplicate acks. Each of these should cause a window
+	// inflation by 1 and cause the sender to send an extra packet.
+	for i := 0; i < 7; i++ {
+		c.SendAck(790, rtxOffset)
+	}
+
+	recover := bytesRead
+
+	// Ensure no new packets arrive.
+	c.CheckNoPacketTimeout("More packets received than expected during recovery after dupacks for this cwnd.",
+		50*time.Millisecond)
 
 	// Acknowledge half of the pending data.
 	rtxOffset = bytesRead - expected*maxPayload/2
@@ -2013,24 +2026,37 @@ func DisabledTestFastRecovery(t *testing.T) {
 	// Receive the retransmit due to partial ack.
 	c.ReceiveAndCheckPacket(data, rtxOffset, maxPayload)
 
-	// This part is tricky: when the retransmit happened, we had "expected"
-	// packets pending, cwnd reset to expected/2, and ssthresh set to
-	// expected/2. By acknowledging expected/2 packets, 7 new packets are
-	// allowed to be sent immediately.
-	for j := 0; j < 7; j++ {
+	// Receive the 10 extra packets that should have been released due to
+	// the congestion window inflation in recovery.
+	for i := 0; i < 10; i++ {
 		c.ReceiveAndCheckPacket(data, bytesRead, maxPayload)
 		bytesRead += maxPayload
 	}
 
-	c.CheckNoPacketTimeout("More packets received than expected for this cwnd.", 50*time.Millisecond)
+	// A partial ACK during recovery should reduce congestion window by the
+	// number acked. Since we had "expected" packets outstanding before sending
+	// partial ack and we acked expected/2 , the cwnd and outstanding should
+	// be expected/2 + 7. Which means the sender should not send any more packets
+	// till we ack this one.
+	c.CheckNoPacketTimeout("More packets received than expected during recovery after partial ack for this cwnd.",
+		50*time.Millisecond)
 
-	// Acknowledge all pending data.
-	c.SendAck(790, bytesRead)
+	// Acknowledge all pending data to recover point.
+	c.SendAck(790, recover)
 
-	// Now the inflation is removed, so cwnd is expected/2. But since we've
-	// received expected+7 packets since cwnd changed, it must now be set
-	// expected/2 + 2, given that floor((expected+7)/(expected/2)) == 2.
-	expected = expected/2 + 2
+	// At this point, the cwnd should reset to expected/2 and there are 10
+	// packets outstanding.
+	//
+	// NOTE: Technically netstack is incorrect in that we adjust the cwnd on
+	// the same segment that takes us out of recovery. But because of that
+	// the actual cwnd at exit of recovery will be expected/2 + 1 as we
+	// acked a cwnd worth of packets which will increase the cwnd further by
+	// 1 in congestion avoidance.
+	//
+	// Now in the first iteration since there are 10 packets outstanding.
+	// We would expect to get expected/2 +1 - 10 packets. But subsequent
+	// iterations will send us expected/2 + 1 + 1 (per iteration).
+	expected = expected/2 + 1 - 10
 	for i := 0; i < iterations; i++ {
 		// Read all packets expected on this iteration. Don't
 		// acknowledge any of them just yet, so that we can measure the
@@ -2042,13 +2068,19 @@ func DisabledTestFastRecovery(t *testing.T) {
 
 		// Check we don't receive any more packets on this iteration.
 		// The timeout can't be too high or we'll trigger a timeout.
-		c.CheckNoPacketTimeout("More packets received than expected for this cwnd.", 50*time.Millisecond)
+		c.CheckNoPacketTimeout(fmt.Sprintf("More packets received(after deflation) than expected %d for this cwnd.", expected), 50*time.Millisecond)
 
 		// Acknowledge all the data received so far.
 		c.SendAck(790, bytesRead)
 
 		// In cogestion avoidance, the packets trains increase by 1 in
 		// each iteration.
+		if i == 0 {
+			// After the first iteration we expect to get the full
+			// congestion window worth of packets in every
+			// iteration.
+			expected += 10
+		}
 		expected++
 	}
 }
@@ -2261,7 +2293,7 @@ func TestReadAfterClosedState(t *testing.T) {
 	c.WQ.EventRegister(&we, waiter.EventIn)
 	defer c.WQ.EventUnregister(&we)
 
-	if _, err := c.EP.Read(nil); err != tcpip.ErrWouldBlock {
+	if _, _, err := c.EP.Read(nil); err != tcpip.ErrWouldBlock {
 		t.Fatalf("Unexpected error from Read: %v", err)
 	}
 
@@ -2313,7 +2345,7 @@ func TestReadAfterClosedState(t *testing.T) {
 
 	// Check that peek works.
 	peekBuf := make([]byte, 10)
-	n, err := c.EP.Peek([][]byte{peekBuf})
+	n, _, err := c.EP.Peek([][]byte{peekBuf})
 	if err != nil {
 		t.Fatalf("Unexpected error from Peek: %v", err)
 	}
@@ -2324,7 +2356,7 @@ func TestReadAfterClosedState(t *testing.T) {
 	}
 
 	// Receive data.
-	v, err := c.EP.Read(nil)
+	v, _, err := c.EP.Read(nil)
 	if err != nil {
 		t.Fatalf("Unexpected error from Read: %v", err)
 	}
@@ -2335,11 +2367,11 @@ func TestReadAfterClosedState(t *testing.T) {
 
 	// Now that we drained the queue, check that functions fail with the
 	// right error code.
-	if _, err := c.EP.Read(nil); err != tcpip.ErrClosedForReceive {
+	if _, _, err := c.EP.Read(nil); err != tcpip.ErrClosedForReceive {
 		t.Fatalf("Unexpected return from Read: got %v, want %v", err, tcpip.ErrClosedForReceive)
 	}
 
-	if _, err := c.EP.Peek([][]byte{peekBuf}); err != tcpip.ErrClosedForReceive {
+	if _, _, err := c.EP.Peek([][]byte{peekBuf}); err != tcpip.ErrClosedForReceive {
 		t.Fatalf("Unexpected return from Peek: got %v, want %v", err, tcpip.ErrClosedForReceive)
 	}
 }
@@ -2447,7 +2479,7 @@ func checkSendBufferSize(t *testing.T, ep tcpip.Endpoint, v int) {
 }
 
 func TestDefaultBufferSizes(t *testing.T) {
-	s := stack.New([]string{ipv4.ProtocolName}, []string{tcp.ProtocolName})
+	s := stack.New(&tcpip.StdClock{}, []string{ipv4.ProtocolName}, []string{tcp.ProtocolName})
 
 	// Check the default values.
 	ep, err := s.NewEndpoint(tcp.ProtocolNumber, ipv4.ProtocolNumber, &waiter.Queue{})
@@ -2493,7 +2525,7 @@ func TestDefaultBufferSizes(t *testing.T) {
 }
 
 func TestMinMaxBufferSizes(t *testing.T) {
-	s := stack.New([]string{ipv4.ProtocolName}, []string{tcp.ProtocolName})
+	s := stack.New(&tcpip.StdClock{}, []string{ipv4.ProtocolName}, []string{tcp.ProtocolName})
 
 	// Check the default values.
 	ep, err := s.NewEndpoint(tcp.ProtocolNumber, ipv4.ProtocolNumber, &waiter.Queue{})
@@ -2543,7 +2575,7 @@ func TestSelfConnect(t *testing.T) {
 	// it checks that if an endpoint binds to say 127.0.0.1:1000 then
 	// connects to 127.0.0.1:1000, then it will be connected to itself, and
 	// is able to send and receive data through the same endpoint.
-	s := stack.New([]string{ipv4.ProtocolName}, []string{tcp.ProtocolName})
+	s := stack.New(&tcpip.StdClock{}, []string{ipv4.ProtocolName}, []string{tcp.ProtocolName})
 
 	id := loopback.New()
 	if testing.Verbose() {
@@ -2605,13 +2637,13 @@ func TestSelfConnect(t *testing.T) {
 	// Read back what was written.
 	wq.EventUnregister(&waitEntry)
 	wq.EventRegister(&waitEntry, waiter.EventIn)
-	rd, err := ep.Read(nil)
+	rd, _, err := ep.Read(nil)
 	if err != nil {
 		if err != tcpip.ErrWouldBlock {
 			t.Fatalf("Read failed: %v", err)
 		}
 		<-notifyCh
-		rd, err = ep.Read(nil)
+		rd, _, err = ep.Read(nil)
 		if err != nil {
 			t.Fatalf("Read failed: %v", err)
 		}

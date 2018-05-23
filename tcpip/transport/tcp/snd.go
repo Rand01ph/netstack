@@ -131,6 +131,10 @@ func newSender(ep *endpoint, iss, irs seqnum.Value, sndWnd seqnum.Size, mss uint
 		lastSendTime:     time.Now(),
 		maxPayloadSize:   int(mss),
 		maxSentAck:       irs + 1,
+		fr: fastRecovery{
+			// See: https://tools.ietf.org/html/rfc6582#section-3.2 Step 1.
+			last: iss,
+		},
 	}
 
 	// A negative sndWndScale means that no scaling is in use, otherwise we
@@ -148,7 +152,7 @@ func newSender(ep *endpoint, iss, irs seqnum.Value, sndWnd seqnum.Size, mss uint
 
 // updateMaxPayloadSize updates the maximum payload size based on the given
 // MTU. If this is in response to "packet too big" control packets (indicated
-// by the count argument), it also reduces the number of oustanding packets and
+// by the count argument), it also reduces the number of outstanding packets and
 // attempts to retransmit the first packet above the MTU size.
 func (s *sender) updateMaxPayloadSize(mtu, count int) {
 	m := mtu - header.TCPMinimumSize
@@ -271,10 +275,15 @@ func (s *sender) retransmitTimerExpired() bool {
 		// Leave the state. We don't need to update ssthresh because it
 		// has already been updated when entered fast-recovery.
 		s.leaveFastRecovery()
-	} else {
-		// We lost a packet, so reduce ssthresh.
-		s.reduceSlowStartThreshold()
 	}
+
+	// See: https://tools.ietf.org/html/rfc6582#section-3.2 Step 4.
+	// We store the highest sequence number transmitted in cases where
+	// we were not in fast recovery.
+	s.fr.last = s.sndNxt - 1
+
+	// We lost a packet, so reduce ssthresh.
+	s.reduceSlowStartThreshold()
 
 	// Reduce the congestion window to 1, i.e., enter slow-start. Per
 	// RFC 5681, page 7, we must use 1 regardless of the value of the
@@ -333,15 +342,17 @@ func (s *sender) sendData() {
 			s.ep.mu.Lock()
 			// We're sending a FIN by default
 			fl := flagFin
+			segEnd = seg.sequenceNumber
 			if (s.ep.shutdownFlags&tcpip.ShutdownRead) != 0 && rcvBufUsed > 0 {
 				// If there is unread data we must send a RST.
 				// For more information see RFC 2525 section 2.17.
 				fl = flagRst
+			} else {
+				segEnd = seg.sequenceNumber.Add(1)
 			}
+
 			s.ep.mu.Unlock()
 			seg.flags |= uint8(fl)
-
-			segEnd = seg.sequenceNumber.Add(1)
 		} else {
 			// We're sending a non-FIN segment.
 			if !seg.sequenceNumber.LessThan(end) {
@@ -387,7 +398,11 @@ func (s *sender) sendData() {
 func (s *sender) enterFastRecovery() {
 	// Save state to reflect we're now in fast recovery.
 	s.reduceSlowStartThreshold()
-	s.sndCwnd = s.sndSsthresh
+	// Save state to reflect we're now in fast recovery.
+	// See : https://tools.ietf.org/html/rfc5681#section-3.2 Step 3.
+	// We inflat the cwnd by 3 to account for the 3 packets which triggered
+	// the 3 duplicate ACKs and are now not in flight.
+	s.sndCwnd = s.sndSsthresh + 3
 	s.fr.first = s.sndUna
 	s.fr.last = s.sndNxt - 1
 	s.fr.maxCwnd = s.sndCwnd + s.outstanding
@@ -396,6 +411,10 @@ func (s *sender) enterFastRecovery() {
 
 func (s *sender) leaveFastRecovery() {
 	s.fr.active = false
+	s.fr.first = 0
+	s.fr.last = s.sndNxt - 1
+	s.fr.maxCwnd = 0
+	s.dupAckCount = 0
 
 	// Deflate cwnd. It had been artificially inflated when new dups arrived.
 	s.sndCwnd = s.sndSsthresh
@@ -462,6 +481,15 @@ func (s *sender) checkDuplicateAck(seg *segment) bool {
 		return false
 	}
 
+	// See: https://tools.ietf.org/html/rfc6582#section-3.2 Step 2
+	//
+	// We only do the check here, the incrementing of last to the highest
+	// sequence number transmitted till now is done when enterFastRecovery
+	// is invoked.
+	if !s.fr.last.LessThan(seg.ackNumber) {
+		s.dupAckCount = 0
+		return false
+	}
 	s.enterFastRecovery()
 	s.dupAckCount = 0
 	return true
@@ -525,7 +553,7 @@ func (s *sender) handleRcvdSegment(seg *segment) {
 		s.sndUna = ack
 
 		ackLeft := acked
-		originalOutsanding := s.outstanding
+		originalOutstanding := s.outstanding
 		for ackLeft > 0 {
 			// We use logicalLen here because we can have FIN
 			// segments (which are always at the end of list) that
@@ -550,9 +578,11 @@ func (s *sender) handleRcvdSegment(seg *segment) {
 		// Update the send buffer usage and notify potential waiters.
 		s.ep.updateSndBufferUsage(int(acked))
 
-		// Update the congestion window based on the number of
-		// acknowledged packets.
-		s.updateCwnd(originalOutsanding - s.outstanding)
+		// If we are not in fast recovery then update the congestion
+		// window based on the number of acknowledged packets.
+		if !s.fr.active {
+			s.updateCwnd(originalOutstanding - s.outstanding)
+		}
 
 		// It is possible for s.outstanding to drop below zero if we get
 		// a retransmit timeout, reset outstanding to zero but later

@@ -349,13 +349,17 @@ func (e *endpoint) protocolListenLoop(rcvWnd seqnum.Size) *tcpip.Error {
 		// to the endpoint.
 		e.mu.Lock()
 		e.state = stateClosed
-		e.mu.Unlock()
 
 		// Notify waiters that the endpoint is shutdown.
 		e.waiterQueue.Notify(waiter.EventIn | waiter.EventOut)
 
 		// Do cleanup if needed.
-		e.completeWorker()
+		e.completeWorkerLocked()
+
+		if e.drainDone != nil {
+			close(e.drainDone)
+		}
+		e.mu.Unlock()
 	}()
 
 	e.mu.Lock()
@@ -379,8 +383,8 @@ func (e *endpoint) protocolListenLoop(rcvWnd seqnum.Size) *tcpip.Error {
 					e.handleListenSegment(ctx, s)
 					s.decRef()
 				}
-				e.drainDone <- struct{}{}
-				return nil
+				close(e.drainDone)
+				<-e.undrain
 			}
 
 		case wakerForNewSegment:

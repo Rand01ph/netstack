@@ -165,7 +165,7 @@ type TCPSenderState struct {
 	// window size from a segment.
 	SndWndScale uint8
 
-	// MaxSentAck is the highest acknowledgemnt number sent till now.
+	// MaxSentAck is the highest acknowledgement number sent till now.
 	MaxSentAck seqnum.Value
 
 	// FastRecovery holds the fast recovery state for the endpoint.
@@ -270,6 +270,9 @@ type Stack struct {
 	// If not nil, then any new endpoints will have this probe function
 	// invoked everytime they receive a TCP segment.
 	tcpProbeFunc TCPProbeFunc
+
+	// clock is used to generate user-visible times.
+	clock tcpip.Clock
 }
 
 // New allocates a new networking stack with only the requested networking and
@@ -279,7 +282,7 @@ type Stack struct {
 // SetNetworkProtocolOption/SetTransportProtocolOption methods provided by the
 // stack. Please refer to individual protocol implementations as to what options
 // are supported.
-func New(network []string, transport []string) *Stack {
+func New(clock tcpip.Clock, network []string, transport []string) *Stack {
 	s := &Stack{
 		transportProtocols: make(map[tcpip.TransportProtocolNumber]*transportProtocolState),
 		networkProtocols:   make(map[tcpip.NetworkProtocolNumber]NetworkProtocol),
@@ -287,6 +290,7 @@ func New(network []string, transport []string) *Stack {
 		nics:               make(map[tcpip.NICID]*NIC),
 		linkAddrCache:      newLinkAddrCache(ageLimit, resolutionTimeout, resolutionAttempts),
 		PortManager:        ports.NewPortManager(),
+		clock:              clock,
 	}
 
 	// Add specified network protocols.
@@ -388,6 +392,11 @@ func (s *Stack) SetTransportProtocolHandler(p tcpip.TransportProtocolNumber, h f
 	}
 }
 
+// NowNanoseconds implements tcpip.Clock.NowNanoseconds.
+func (s *Stack) NowNanoseconds() int64 {
+	return s.clock.NowNanoseconds()
+}
+
 // Stats returns a snapshot of the current stats.
 //
 // NOTE: The underlying stats are updated using atomic instructions as a result
@@ -474,6 +483,12 @@ func (s *Stack) CreateDisabledNIC(id tcpip.NICID, linkEP tcpip.LinkEndpointID, h
 	return s.createNIC(id, "", linkEP, false, hooked, hookedAddress, hookedPort)
 }
 
+// CreateDisabledNamedNIC is a combination of CreateNamedNIC and
+// CreateDisabledNIC.
+func (s *Stack) CreateDisabledNamedNIC(id tcpip.NICID, name string, linkEP tcpip.LinkEndpointID, hooked bool, hookedAddress tcpip.Address, hookedPort uint16) *tcpip.Error {
+	return s.createNIC(id, name, linkEP, false, hooked, hookedAddress, hookedPort)
+}
+
 // EnableNIC enables the given NIC so that the link-layer endpoint can start
 // delivering packets to it.
 func (s *Stack) EnableNIC(id tcpip.NICID) *tcpip.Error {
@@ -524,6 +539,39 @@ func (s *Stack) NICInfo() map[tcpip.NICID]NICInfo {
 		}
 	}
 	return nics
+}
+
+// NICStateFlags holds information about the state of an NIC.
+type NICStateFlags struct {
+	// Up indicates whether the interface is running.
+	Up bool
+
+	// Running indicates whether resources are allocated.
+	Running bool
+
+	// Promiscuous indicates whether the interface is in promiscuous mode.
+	Promiscuous bool
+}
+
+// NICFlags returns flags about the state of the NIC. It returns an error if
+// the NIC corresponding to id cannot be found.
+func (s *Stack) NICFlags(id tcpip.NICID) (NICStateFlags, *tcpip.Error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	nic := s.nics[id]
+	if nic == nil {
+		return NICStateFlags{}, tcpip.ErrUnknownNICID
+	}
+
+	ret := NICStateFlags{
+		// Netstack interfaces are always up.
+		Up: true,
+
+		Running:     nic.linkEP.IsAttached(),
+		Promiscuous: nic.promiscuous,
+	}
+	return ret, nil
 }
 
 // AddAddress adds a new network-layer address to the specified NIC.

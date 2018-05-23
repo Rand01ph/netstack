@@ -203,9 +203,15 @@ type endpoint struct {
 	// The goroutine drain completion notification channel.
 	drainDone chan struct{}
 
+	// The goroutine undrain notification channel.
+	undrain chan struct{}
+
 	// probe if not nil is invoked on every received segment. It is passed
 	// a copy of the current state of the endpoint.
 	probe stack.TCPProbeFunc
+
+	// The following are only used to assist the restore run to re-connect.
+	connectingAddress tcpip.Address
 }
 
 func newEndpoint(stack *stack.Stack, netProto tcpip.NetworkProtocolNumber, waiterQueue *waiter.Queue) *endpoint {
@@ -320,13 +326,7 @@ func (e *endpoint) Close() {
 	// if we're connected, or stop accepting if we're listening.
 	e.Shutdown(tcpip.ShutdownWrite | tcpip.ShutdownRead)
 
-	// While we hold the lock, determine if the cleanup should happen
-	// inline or if we should tell the worker (if any) to do the cleanup.
 	e.mu.Lock()
-	worker := e.workerRunning
-	if worker {
-		e.workerCleanup = true
-	}
 
 	// We always release ports inline so that they are immediately available
 	// for reuse after Close() is called. If also registered, it means this
@@ -342,29 +342,32 @@ func (e *endpoint) Close() {
 		}
 	}
 
-	e.mu.Unlock()
-
-	// Now that we don't hold the lock anymore, either perform the local
-	// cleanup or kick the worker to make sure it knows it needs to cleanup.
-	if !worker {
-		e.cleanup()
+	// Either perform the local cleanup or kick the worker to make sure it
+	// knows it needs to cleanup.
+	if !e.workerRunning {
+		e.cleanupLocked()
 	} else {
+		e.workerCleanup = true
 		e.notifyProtocolGoroutine(notifyClose)
 	}
+
+	e.mu.Unlock()
 }
 
-// cleanup frees all resources associated with the endpoint. It is called after
-// Close() is called and the worker goroutine (if any) is done with its work.
-func (e *endpoint) cleanup() {
+// cleanupLocked frees all resources associated with the endpoint. It is called
+// after Close() is called and the worker goroutine (if any) is done with its
+// work.
+func (e *endpoint) cleanupLocked() {
 	// Close all endpoints that might have been accepted by TCP but not by
 	// the client.
 	if e.acceptedChan != nil {
 		close(e.acceptedChan)
 		for n := range e.acceptedChan {
-			n.resetConnection(tcpip.ErrConnectionAborted)
+			n.resetConnectionLocked(tcpip.ErrConnectionAborted)
 			n.Close()
 		}
 	}
+	e.workerCleanup = false
 
 	if e.isRegistered {
 		e.stack.UnregisterTransportEndpoint(e.boundNICID, e.effectiveNetProtos, ProtocolNumber, e.id)
@@ -374,7 +377,7 @@ func (e *endpoint) cleanup() {
 }
 
 // Read reads data from the endpoint.
-func (e *endpoint) Read(*tcpip.FullAddress) (buffer.View, *tcpip.Error) {
+func (e *endpoint) Read(*tcpip.FullAddress) (buffer.View, tcpip.ControlMessages, *tcpip.Error) {
 	e.mu.RLock()
 	// The endpoint can be read if it's connected, or if it's already closed
 	// but has some pending unread data. Also note that a RST being received
@@ -383,9 +386,9 @@ func (e *endpoint) Read(*tcpip.FullAddress) (buffer.View, *tcpip.Error) {
 	if s := e.state; s != stateConnected && s != stateClosed && e.rcvBufUsed == 0 {
 		e.mu.RUnlock()
 		if s == stateError {
-			return buffer.View{}, e.hardError
+			return buffer.View{}, tcpip.ControlMessages{}, e.hardError
 		}
-		return buffer.View{}, tcpip.ErrInvalidEndpointState
+		return buffer.View{}, tcpip.ControlMessages{}, tcpip.ErrInvalidEndpointState
 	}
 
 	e.rcvListMu.Lock()
@@ -394,7 +397,7 @@ func (e *endpoint) Read(*tcpip.FullAddress) (buffer.View, *tcpip.Error) {
 
 	e.mu.RUnlock()
 
-	return v, err
+	return v, tcpip.ControlMessages{}, err
 }
 
 func (e *endpoint) readLocked() (buffer.View, *tcpip.Error) {
@@ -498,7 +501,7 @@ func (e *endpoint) Write(p tcpip.Payload, opts tcpip.WriteOptions) (uintptr, *tc
 // Peek reads data without consuming it from the endpoint.
 //
 // This method does not block if there is no data pending.
-func (e *endpoint) Peek(vec [][]byte) (uintptr, *tcpip.Error) {
+func (e *endpoint) Peek(vec [][]byte) (uintptr, tcpip.ControlMessages, *tcpip.Error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
@@ -506,9 +509,9 @@ func (e *endpoint) Peek(vec [][]byte) (uintptr, *tcpip.Error) {
 	// but has some pending unread data.
 	if s := e.state; s != stateConnected && s != stateClosed {
 		if s == stateError {
-			return 0, e.hardError
+			return 0, tcpip.ControlMessages{}, e.hardError
 		}
-		return 0, tcpip.ErrInvalidEndpointState
+		return 0, tcpip.ControlMessages{}, tcpip.ErrInvalidEndpointState
 	}
 
 	e.rcvListMu.Lock()
@@ -516,9 +519,9 @@ func (e *endpoint) Peek(vec [][]byte) (uintptr, *tcpip.Error) {
 
 	if e.rcvBufUsed == 0 {
 		if e.rcvClosed || e.state != stateConnected {
-			return 0, tcpip.ErrClosedForReceive
+			return 0, tcpip.ControlMessages{}, tcpip.ErrClosedForReceive
 		}
-		return 0, tcpip.ErrWouldBlock
+		return 0, tcpip.ControlMessages{}, tcpip.ErrWouldBlock
 	}
 
 	// Make a copy of vec so we can modify the slide headers.
@@ -534,7 +537,7 @@ func (e *endpoint) Peek(vec [][]byte) (uintptr, *tcpip.Error) {
 
 			for len(v) > 0 {
 				if len(vec) == 0 {
-					return num, nil
+					return num, tcpip.ControlMessages{}, nil
 				}
 				if len(vec[0]) == 0 {
 					vec = vec[1:]
@@ -549,7 +552,7 @@ func (e *endpoint) Peek(vec [][]byte) (uintptr, *tcpip.Error) {
 		}
 	}
 
-	return num, nil
+	return num, tcpip.ControlMessages{}, nil
 }
 
 // zeroReceiveWindow checks if the receive window to be announced now would be
@@ -786,6 +789,8 @@ func (e *endpoint) Connect(addr tcpip.FullAddress) *tcpip.Error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	connectingAddr := addr.Addr
+
 	netProto, err := e.checkV4Mapped(&addr)
 	if err != nil {
 		return err
@@ -891,6 +896,7 @@ func (e *endpoint) Connect(addr tcpip.FullAddress) *tcpip.Error {
 	e.route = r.Clone()
 	e.boundNICID = nicid
 	e.effectiveNetProtos = netProtos
+	e.connectingAddress = connectingAddr
 	e.workerRunning = true
 
 	go e.protocolMainLoop(false)

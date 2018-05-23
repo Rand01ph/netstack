@@ -1,4 +1,4 @@
-// Copyright 2016 The Netstack Authors. All rights reserved.
+// Copyright 2016 The FlowerWrong Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
@@ -8,14 +8,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/FlowerWrong/netstack/tcpip"
-	"github.com/FlowerWrong/netstack/tcpip/buffer"
-	"github.com/FlowerWrong/netstack/tcpip/header"
-	"github.com/FlowerWrong/netstack/tcpip/link/channel"
-	"github.com/FlowerWrong/netstack/tcpip/link/sniffer"
-	"github.com/FlowerWrong/netstack/tcpip/network/arp"
-	"github.com/FlowerWrong/netstack/tcpip/network/ipv4"
-	"github.com/FlowerWrong/netstack/tcpip/stack"
+	"github.com/google/FlowerWrong/tcpip"
+	"github.com/google/FlowerWrong/tcpip/buffer"
+	"github.com/google/FlowerWrong/tcpip/header"
+	"github.com/google/FlowerWrong/tcpip/link/channel"
+	"github.com/google/FlowerWrong/tcpip/link/sniffer"
+	"github.com/google/FlowerWrong/tcpip/network/arp"
+	"github.com/google/FlowerWrong/tcpip/network/ipv4"
+	"github.com/google/FlowerWrong/tcpip/stack"
+	"github.com/google/FlowerWrong/tcpip/transport/ping"
 )
 
 const (
@@ -32,7 +33,7 @@ type testContext struct {
 }
 
 func newTestContext(t *testing.T) *testContext {
-	s := stack.New([]string{ipv4.ProtocolName, arp.ProtocolName}, []string{ipv4.PingProtocolName})
+	s := stack.New(&tcpip.StdClock{}, []string{ipv4.ProtocolName, arp.ProtocolName}, []string{ping.ProtocolName4})
 
 	const defaultMTU = 65536
 	id, linkEP := channel.New(256, defaultMTU, stackLinkAddr)
