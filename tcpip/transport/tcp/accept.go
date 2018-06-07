@@ -351,7 +351,9 @@ func (e *endpoint) protocolListenLoop(rcvWnd seqnum.Size) *tcpip.Error {
 		e.state = stateClosed
 
 		// Notify waiters that the endpoint is shutdown.
+		e.mu.Unlock()
 		e.waiterQueue.Notify(waiter.EventIn | waiter.EventOut)
+		e.mu.Lock()
 
 		// Do cleanup if needed.
 		e.completeWorkerLocked()

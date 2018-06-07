@@ -818,9 +818,8 @@ func (e *endpoint) protocolMainLoop(passive bool) *tcpip.Error {
 	var closeWaker sleep.Waker
 
 	defer func() {
-		// e.mu is expected to be held upon entering this section.
-		// When the protocol loop exits we should wake up our waiters.
-		e.waiterQueue.Notify(waiter.EventHUp | waiter.EventErr | waiter.EventIn | waiter.EventOut)
+		// e.mu is expected to be hold upon entering this section.
+
 		e.completeWorkerLocked()
 
 		if e.snd != nil {
@@ -836,6 +835,9 @@ func (e *endpoint) protocolMainLoop(passive bool) *tcpip.Error {
 		}
 
 		e.mu.Unlock()
+
+		// When the protocol loop exits we should wake up our waiters.
+		e.waiterQueue.Notify(waiter.EventHUp | waiter.EventErr | waiter.EventIn | waiter.EventOut)
 	}()
 
 	if !passive {
