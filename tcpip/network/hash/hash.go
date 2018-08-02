@@ -16,9 +16,9 @@
 package hash
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 
-	"github.com/FlowerWrong/netstack/rand"
 	"github.com/FlowerWrong/netstack/tcpip/header"
 )
 

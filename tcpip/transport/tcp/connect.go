@@ -15,11 +15,11 @@
 package tcp
 
 import (
+	"crypto/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/FlowerWrong/netstack/rand"
 	"github.com/FlowerWrong/netstack/sleep"
 	"github.com/FlowerWrong/netstack/tcpip"
 	"github.com/FlowerWrong/netstack/tcpip/buffer"

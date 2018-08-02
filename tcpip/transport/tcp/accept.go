@@ -15,6 +15,7 @@
 package tcp
 
 import (
+	"crypto/rand"
 	"crypto/sha1"
 	"encoding/binary"
 	"hash"
@@ -22,7 +23,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/FlowerWrong/netstack/rand"
 	"github.com/FlowerWrong/netstack/sleep"
 	"github.com/FlowerWrong/netstack/tcpip"
 	"github.com/FlowerWrong/netstack/tcpip/header"

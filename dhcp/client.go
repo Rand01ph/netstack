@@ -17,12 +17,12 @@ package dhcp
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"fmt"
 	"log"
 	"sync"
 	"time"
 
-	"github.com/FlowerWrong/netstack/rand"
 	"github.com/FlowerWrong/netstack/tcpip"
 	"github.com/FlowerWrong/netstack/tcpip/network/ipv4"
 	"github.com/FlowerWrong/netstack/tcpip/stack"
