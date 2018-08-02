@@ -1,6 +1,16 @@
-// Copyright 2016 The Netstack Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright 2018 Google Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 // Package fdbased provides the implemention of data-link layer endpoints
 // backed by boundary-preserving file descriptors (e.g., TUN devices,
@@ -61,6 +71,8 @@ type Options struct {
 	ChecksumOffload bool
 	ClosedFunc      func(*tcpip.Error)
 	Address         tcpip.LinkAddress
+	SaveRestore     bool
+	DisconnectOk    bool
 }
 
 // New creates a new fd-based endpoint.
@@ -77,6 +89,14 @@ func New(ifce *water.Interface, opts *Options) tcpip.LinkEndpointID {
 	if opts.EthernetHeader {
 		hdrSize = header.EthernetMinimumSize
 		caps |= stack.CapabilityResolutionRequired
+	}
+
+	if opts.SaveRestore {
+		caps |= stack.CapabilitySaveRestore
+	}
+
+	if opts.DisconnectOk {
+		caps |= stack.CapabilityDisconnectOk
 	}
 
 	e := &endpoint{
@@ -100,6 +120,9 @@ func New(ifce *water.Interface, opts *Options) tcpip.LinkEndpointID {
 // dispatches them via the provided dispatcher.
 func (e *endpoint) Attach(dispatcher stack.NetworkDispatcher) {
 	e.attached = true
+	// Link endpoints are not savable. When transportation endpoints are
+	// saved, they stop sending outgoing packets and all incoming packets
+	// are rejected.
 	go e.dispatchLoop(dispatcher)
 }
 

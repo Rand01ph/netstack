@@ -1,15 +1,25 @@
-// Copyright 2016 The Netstack Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright 2018 Google Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package tcp
 
 import (
-	"crypto/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/FlowerWrong/netstack/rand"
 	"github.com/FlowerWrong/netstack/sleep"
 	"github.com/FlowerWrong/netstack/tcpip"
 	"github.com/FlowerWrong/netstack/tcpip/buffer"
@@ -443,7 +453,8 @@ func (h *handshake) execute() *tcpip.Error {
 				return tcpip.ErrAborted
 			}
 			if n&notifyDrain != 0 {
-				for s := h.ep.segmentQueue.dequeue(); s != nil; s = h.ep.segmentQueue.dequeue() {
+				for !h.ep.segmentQueue.empty() {
+					s := h.ep.segmentQueue.dequeue()
 					err := h.handleSegment(s)
 					s.decRef()
 					if err != nil {
@@ -813,14 +824,12 @@ func (e *endpoint) handleSegments() *tcpip.Error {
 // protocolMainLoop is the main loop of the TCP protocol. It runs in its own
 // goroutine and is responsible for sending segments and handling received
 // segments.
-func (e *endpoint) protocolMainLoop(passive bool) *tcpip.Error {
+func (e *endpoint) protocolMainLoop(handshake bool) *tcpip.Error {
 	var closeTimer *time.Timer
 	var closeWaker sleep.Waker
 
-	defer func() {
+	epilogue := func() {
 		// e.mu is expected to be hold upon entering this section.
-
-		e.completeWorkerLocked()
 
 		if e.snd != nil {
 			e.snd.resendTimer.cleanup()
@@ -830,6 +839,8 @@ func (e *endpoint) protocolMainLoop(passive bool) *tcpip.Error {
 			closeTimer.Stop()
 		}
 
+		e.completeWorkerLocked()
+
 		if e.drainDone != nil {
 			close(e.drainDone)
 		}
@@ -838,9 +849,9 @@ func (e *endpoint) protocolMainLoop(passive bool) *tcpip.Error {
 
 		// When the protocol loop exits we should wake up our waiters.
 		e.waiterQueue.Notify(waiter.EventHUp | waiter.EventErr | waiter.EventIn | waiter.EventOut)
-	}()
+	}
 
-	if !passive {
+	if handshake {
 		// This is an active connection, so we must initiate the 3-way
 		// handshake, and then inform potential waiters about its
 		// completion.
@@ -856,7 +867,8 @@ func (e *endpoint) protocolMainLoop(passive bool) *tcpip.Error {
 			e.mu.Lock()
 			e.state = stateError
 			e.hardError = err
-			// Lock released in deferred statement.
+			// Lock released below.
+			epilogue()
 
 			return err
 		}
@@ -938,6 +950,11 @@ func (e *endpoint) protocolMainLoop(passive bool) *tcpip.Error {
 					e.snd.updateMaxPayloadSize(mtu, count)
 				}
 
+				if n&notifyReset != 0 {
+					e.mu.Lock()
+					e.resetConnectionLocked(tcpip.ErrConnectionAborted)
+					e.mu.Unlock()
+				}
 				if n&notifyClose != 0 && closeTimer == nil {
 					// Reset the connection 3 seconds after the
 					// endpoint has been closed.
@@ -945,6 +962,17 @@ func (e *endpoint) protocolMainLoop(passive bool) *tcpip.Error {
 						closeWaker.Assert()
 					})
 				}
+
+				if n&notifyDrain != 0 {
+					for !e.segmentQueue.empty() {
+						if err := e.handleSegments(); err != nil {
+							return err
+						}
+					}
+					close(e.drainDone)
+					<-e.undrain
+				}
+
 				return nil
 			},
 		},
@@ -956,6 +984,27 @@ func (e *endpoint) protocolMainLoop(passive bool) *tcpip.Error {
 		s.AddWaker(funcs[i].w, i)
 	}
 
+	// The following assertions and notifications are needed for restored
+	// endpoints. Fresh newly created endpoints have empty states and should
+	// not invoke any.
+	e.segmentQueue.mu.Lock()
+	if !e.segmentQueue.list.Empty() {
+		e.newSegmentWaker.Assert()
+	}
+	e.segmentQueue.mu.Unlock()
+
+	e.rcvListMu.Lock()
+	if !e.rcvList.Empty() {
+		e.waiterQueue.Notify(waiter.EventIn)
+	}
+	e.rcvListMu.Unlock()
+
+	e.mu.RLock()
+	if e.workerCleanup {
+		e.notifyProtocolGoroutine(notifyClose)
+	}
+	e.mu.RUnlock()
+
 	// Main loop. Handle segments until both send and receive ends of the
 	// connection have completed.
 	for !e.rcv.closed || !e.snd.closed || e.snd.sndUna != e.snd.sndNxtList {
@@ -965,15 +1014,20 @@ func (e *endpoint) protocolMainLoop(passive bool) *tcpip.Error {
 		if err := funcs[v].f(); err != nil {
 			e.mu.Lock()
 			e.resetConnectionLocked(err)
-			// Lock released in deferred statement.
+			// Lock released below.
+			epilogue()
+
 			return nil
 		}
 	}
 
 	// Mark endpoint as closed.
 	e.mu.Lock()
-	e.state = stateClosed
-	// Lock released in deferred statement.
+	if e.state != stateError {
+		e.state = stateClosed
+	}
+	// Lock released below.
+	epilogue()
 
 	return nil
 }

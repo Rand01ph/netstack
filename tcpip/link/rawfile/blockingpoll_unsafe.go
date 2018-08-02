@@ -12,9 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +build amd64
+// +build linux,!amd64
 
-package sleep
+package rawfile
 
-// See commit_noasm.go for a description of commitSleep.
-func commitSleep(g uintptr, waitingG *uintptr) bool
+import (
+	"syscall"
+	"unsafe"
+)
+
+func blockingPoll(fds *pollEvent, nfds int, timeout int64) (int, syscall.Errno) {
+	n, _, e := syscall.Syscall(syscall.SYS_POLL, uintptr(unsafe.Pointer(fds)), uintptr(nfds), uintptr(timeout))
+	return int(n), e
+}

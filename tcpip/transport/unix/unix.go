@@ -1,6 +1,16 @@
-// Copyright 2016 The Netstack Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright 2018 Google Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 // Package unix contains the implementation of Unix endpoints.
 package unix
@@ -384,14 +394,22 @@ func vecCopy(data [][]byte, buf []byte) (uintptr, [][]byte, []byte) {
 
 // Readable implements Receiver.Readable.
 func (q *streamQueueReceiver) Readable() bool {
+	q.mu.Lock()
+	bl := len(q.buffer)
+	r := q.readQueue.IsReadable()
+	q.mu.Unlock()
 	// We're readable if we have data in our buffer or if the queue receiver is
 	// readable.
-	return len(q.buffer) > 0 || q.readQueue.IsReadable()
+	return bl > 0 || r
 }
 
 // RecvQueuedSize implements Receiver.RecvQueuedSize.
 func (q *streamQueueReceiver) RecvQueuedSize() int64 {
-	return int64(len(q.buffer)) + q.readQueue.QueuedSize()
+	q.mu.Lock()
+	bl := len(q.buffer)
+	qs := q.readQueue.QueuedSize()
+	q.mu.Unlock()
+	return int64(bl) + qs
 }
 
 // RecvMaxQueueSize implements Receiver.RecvMaxQueueSize.

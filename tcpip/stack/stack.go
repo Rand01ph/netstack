@@ -1,6 +1,16 @@
-// Copyright 2016 The Netstack Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright 2018 Google Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 // Package stack provides the glue between networking protocols and the
 // consumers of the networking stack.
@@ -275,6 +285,14 @@ type Stack struct {
 	clock tcpip.Clock
 }
 
+// Options contains optional Stack configuration.
+type Options struct {
+	// Clock is an optional clock source used for timestampping packets.
+	//
+	// If no Clock is specified, the clock source will be time.Now.
+	Clock tcpip.Clock
+}
+
 // New allocates a new networking stack with only the requested networking and
 // transport protocols configured with default options.
 //
@@ -282,7 +300,12 @@ type Stack struct {
 // SetNetworkProtocolOption/SetTransportProtocolOption methods provided by the
 // stack. Please refer to individual protocol implementations as to what options
 // are supported.
-func New(clock tcpip.Clock, network []string, transport []string) *Stack {
+func New(network []string, transport []string, opts Options) *Stack {
+	clock := opts.Clock
+	if clock == nil {
+		clock = &tcpip.StdClock{}
+	}
+
 	s := &Stack{
 		transportProtocols: make(map[tcpip.TransportProtocolNumber]*transportProtocolState),
 		networkProtocols:   make(map[tcpip.NetworkProtocolNumber]NetworkProtocol),

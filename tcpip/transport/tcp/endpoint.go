@@ -1,16 +1,26 @@
-// Copyright 2016 The Netstack Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright 2018 Google Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package tcp
 
 import (
-	"crypto/rand"
 	"math"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/FlowerWrong/netstack/rand"
 	"github.com/FlowerWrong/netstack/sleep"
 	"github.com/FlowerWrong/netstack/tcpip"
 	"github.com/FlowerWrong/netstack/tcpip/buffer"
@@ -40,6 +50,7 @@ const (
 	notifyClose
 	notifyMTUChanged
 	notifyDrain
+	notifyReset
 )
 
 // SACKInfo holds TCP SACK related information for a given endpoint.
@@ -82,6 +93,8 @@ type endpoint struct {
 	//
 	// Once the peer has closed its send side, rcvClosed is set to true
 	// to indicate to users that no more data is coming.
+	//
+	// rcvListMu can be taken after the endpoint mu below.
 	rcvListMu  sync.Mutex
 	rcvList    segmentList
 	rcvClosed  bool
@@ -211,6 +224,7 @@ type endpoint struct {
 	probe stack.TCPProbeFunc
 
 	// The following are only used to assist the restore run to re-connect.
+	bindAddress       tcpip.Address
 	connectingAddress tcpip.Address
 }
 
@@ -344,6 +358,7 @@ func (e *endpoint) Close() {
 
 	// Either perform the local cleanup or kick the worker to make sure it
 	// knows it needs to cleanup.
+	tcpip.AddDanglingEndpoint(e)
 	if !e.workerRunning {
 		e.cleanupLocked()
 	} else {
@@ -363,9 +378,12 @@ func (e *endpoint) cleanupLocked() {
 	if e.acceptedChan != nil {
 		close(e.acceptedChan)
 		for n := range e.acceptedChan {
+			n.mu.Lock()
 			n.resetConnectionLocked(tcpip.ErrConnectionAborted)
+			n.mu.Unlock()
 			n.Close()
 		}
+		e.acceptedChan = nil
 	}
 	e.workerCleanup = false
 
@@ -374,6 +392,7 @@ func (e *endpoint) cleanupLocked() {
 	}
 
 	e.route.Release()
+	tcpip.DeleteDanglingEndpoint(e)
 }
 
 // Read reads data from the endpoint.
@@ -383,7 +402,10 @@ func (e *endpoint) Read(*tcpip.FullAddress) (buffer.View, tcpip.ControlMessages,
 	// but has some pending unread data. Also note that a RST being received
 	// would cause the state to become stateError so we should allow the
 	// reads to proceed before returning a ECONNRESET.
-	if s := e.state; s != stateConnected && s != stateClosed && e.rcvBufUsed == 0 {
+	e.rcvListMu.Lock()
+	bufUsed := e.rcvBufUsed
+	if s := e.state; s != stateConnected && s != stateClosed && bufUsed == 0 {
+		e.rcvListMu.Unlock()
 		e.mu.RUnlock()
 		if s == stateError {
 			return buffer.View{}, tcpip.ControlMessages{}, e.hardError
@@ -391,7 +413,6 @@ func (e *endpoint) Read(*tcpip.FullAddress) (buffer.View, tcpip.ControlMessages,
 		return buffer.View{}, tcpip.ControlMessages{}, tcpip.ErrInvalidEndpointState
 	}
 
-	e.rcvListMu.Lock()
 	v, err := e.readLocked()
 	e.rcvListMu.Unlock()
 
@@ -786,6 +807,16 @@ func (e *endpoint) checkV4Mapped(addr *tcpip.FullAddress) (tcpip.NetworkProtocol
 
 // Connect connects the endpoint to its peer.
 func (e *endpoint) Connect(addr tcpip.FullAddress) *tcpip.Error {
+	return e.connect(addr, true, true)
+}
+
+// connect connects the endpoint to its peer. In the normal non-S/R case, the
+// new connection is expected to run the main goroutine and perform handshake.
+// In restore of previously connected endpoints, both ends will be passively
+// created (so no new handshaking is done); for stack-accepted connections not
+// yet accepted by the app, they are restored without running the main goroutine
+// here.
+func (e *endpoint) connect(addr tcpip.FullAddress, handshake bool, run bool) *tcpip.Error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -897,9 +928,27 @@ func (e *endpoint) Connect(addr tcpip.FullAddress) *tcpip.Error {
 	e.boundNICID = nicid
 	e.effectiveNetProtos = netProtos
 	e.connectingAddress = connectingAddr
-	e.workerRunning = true
 
-	go e.protocolMainLoop(false)
+	// Connect in the restore phase does not perform handshake. Restore its
+	// connection setting here.
+	if !handshake {
+		e.segmentQueue.mu.Lock()
+		for _, l := range []segmentList{e.segmentQueue.list, e.sndQueue, e.snd.writeList} {
+			for s := l.Front(); s != nil; s = s.Next() {
+				s.id = e.id
+				s.route = r.Clone()
+				e.sndWaker.Assert()
+			}
+		}
+		e.segmentQueue.mu.Unlock()
+		e.snd.updateMaxPayloadSize(int(e.route.MTU()), 0)
+		e.state = stateConnected
+	}
+
+	if run {
+		e.workerRunning = true
+		go e.protocolMainLoop(handshake)
+	}
 
 	return tcpip.ErrConnectStarted
 }
@@ -919,7 +968,20 @@ func (e *endpoint) Shutdown(flags tcpip.ShutdownFlags) *tcpip.Error {
 	switch e.state {
 	case stateConnected:
 		// Close for write.
-		if (flags & tcpip.ShutdownWrite) != 0 {
+		if (e.shutdownFlags & tcpip.ShutdownWrite) != 0 {
+			if (e.shutdownFlags & tcpip.ShutdownRead) != 0 {
+				// We're fully closed, if we have unread data we need to abort
+				// the connection with a RST.
+				e.rcvListMu.Lock()
+				rcvBufUsed := e.rcvBufUsed
+				e.rcvListMu.Unlock()
+
+				if rcvBufUsed > 0 {
+					e.notifyProtocolGoroutine(notifyReset)
+					return nil
+				}
+			}
+
 			e.sndBufMu.Lock()
 
 			if e.sndClosed {
@@ -971,6 +1033,9 @@ func (e *endpoint) Listen(backlog int) *tcpip.Error {
 		if len(e.acceptedChan) > backlog {
 			return tcpip.ErrInvalidEndpointState
 		}
+		if cap(e.acceptedChan) == backlog {
+			return nil
+		}
 		origChan := e.acceptedChan
 		e.acceptedChan = make(chan *endpoint, backlog)
 		close(origChan)
@@ -1008,7 +1073,7 @@ func (e *endpoint) Listen(backlog int) *tcpip.Error {
 func (e *endpoint) startAcceptedLoop(waiterQueue *waiter.Queue) {
 	e.waiterQueue = waiterQueue
 	e.workerRunning = true
-	go e.protocolMainLoop(true)
+	go e.protocolMainLoop(false)
 }
 
 // Accept returns a new endpoint if a peer has established a connection
@@ -1049,6 +1114,7 @@ func (e *endpoint) Bind(addr tcpip.FullAddress, commit func() *tcpip.Error) (ret
 		return tcpip.ErrAlreadyBound
 	}
 
+	e.bindAddress = addr.Addr
 	netProto, err := e.checkV4Mapped(&addr)
 	if err != nil {
 		return err

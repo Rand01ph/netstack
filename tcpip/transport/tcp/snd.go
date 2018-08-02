@@ -1,6 +1,16 @@
-// Copyright 2016 The Netstack Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright 2018 Google Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package tcp
 
@@ -21,7 +31,27 @@ const (
 
 	// InitialCwnd is the initial congestion window.
 	InitialCwnd = 10
+
+	// nDupAckThreshold is the number of duplicate ACK's required
+	// before fast-retransmit is entered.
+	nDupAckThreshold = 3
 )
+
+// congestionControl is an interface that must be implemented by any supported
+// congestion control algorithm.
+type congestionControl interface {
+	// HandleNDupAcks is invoked when sender.dupAckCount >= nDupAckThreshold
+	// just before entering fast retransmit.
+	HandleNDupAcks()
+
+	// HandleRTOExpired is invoked when the retransmit timer expires.
+	HandleRTOExpired()
+
+	// Update is invoked when processing inbound acks. It's passed the
+	// number of packet's that were acked by the most recent cumulative
+	// acknowledgement.
+	Update(packetsAcked int)
+}
 
 // sender holds the state necessary to send TCP segments.
 type sender struct {
@@ -97,6 +127,9 @@ type sender struct {
 
 	// maxSentAck is the maxium acknowledgement actually sent.
 	maxSentAck seqnum.Value
+
+	// cc is the congestion control algorithm in use for this sender.
+	cc congestionControl
 }
 
 // fastRecovery holds information related to fast recovery from a packet loss.
@@ -136,6 +169,8 @@ func newSender(ep *endpoint, iss, irs seqnum.Value, sndWnd seqnum.Size, mss uint
 			last: iss,
 		},
 	}
+
+	s.cc = newRenoCC(s)
 
 	// A negative sndWndScale means that no scaling is in use, otherwise we
 	// store the scaling value.
@@ -241,15 +276,6 @@ func (s *sender) resendSegment() {
 	}
 }
 
-// reduceSlowStartThreshold reduces the slow-start threshold per RFC 5681,
-// page 6, eq. 4. It is called when we detect congestion in the network.
-func (s *sender) reduceSlowStartThreshold() {
-	s.sndSsthresh = s.outstanding / 2
-	if s.sndSsthresh < 2 {
-		s.sndSsthresh = 2
-	}
-}
-
 // retransmitTimerExpired is called when the retransmit timer expires, and
 // unacknowledged segments are assumed lost, and thus need to be resent.
 // Returns true if the connection is still usable, or false if the connection
@@ -282,13 +308,7 @@ func (s *sender) retransmitTimerExpired() bool {
 	// we were not in fast recovery.
 	s.fr.last = s.sndNxt - 1
 
-	// We lost a packet, so reduce ssthresh.
-	s.reduceSlowStartThreshold()
-
-	// Reduce the congestion window to 1, i.e., enter slow-start. Per
-	// RFC 5681, page 7, we must use 1 regardless of the value of the
-	// initial congestion window.
-	s.sndCwnd = 1
+	s.cc.HandleRTOExpired()
 
 	// Mark the next segment to be sent as the first unacknowledged one and
 	// start sending again. Set the number of outstanding packets to 0 so
@@ -333,28 +353,17 @@ func (s *sender) sendData() {
 
 		var segEnd seqnum.Value
 		if seg.data.Size() == 0 {
-			seg.flags = flagAck
-
-			s.ep.rcvListMu.Lock()
-			rcvBufUsed := s.ep.rcvBufUsed
-			s.ep.rcvListMu.Unlock()
-
-			s.ep.mu.Lock()
-			// We're sending a FIN by default
-			fl := flagFin
-			segEnd = seg.sequenceNumber
-			if (s.ep.shutdownFlags&tcpip.ShutdownRead) != 0 && rcvBufUsed > 0 {
-				// If there is unread data we must send a RST.
-				// For more information see RFC 2525 section 2.17.
-				fl = flagRst
-			} else {
-				segEnd = seg.sequenceNumber.Add(1)
+			if s.writeList.Back() != seg {
+				panic("FIN segments must be the final segment in the write list.")
 			}
-
-			s.ep.mu.Unlock()
-			seg.flags |= uint8(fl)
+			seg.flags = flagAck | flagFin
+			segEnd = seg.sequenceNumber.Add(1)
 		} else {
 			// We're sending a non-FIN segment.
+			if seg.flags&flagFin != 0 {
+				panic("Netstack queues FIN segments without data.")
+			}
+
 			if !seg.sequenceNumber.LessThan(end) {
 				break
 			}
@@ -396,8 +405,6 @@ func (s *sender) sendData() {
 }
 
 func (s *sender) enterFastRecovery() {
-	// Save state to reflect we're now in fast recovery.
-	s.reduceSlowStartThreshold()
 	// Save state to reflect we're now in fast recovery.
 	// See : https://tools.ietf.org/html/rfc5681#section-3.2 Step 3.
 	// We inflat the cwnd by 3 to account for the 3 packets which triggered
@@ -475,9 +482,9 @@ func (s *sender) checkDuplicateAck(seg *segment) bool {
 		return false
 	}
 
-	// Enter fast recovery when we reach 3 dups.
 	s.dupAckCount++
-	if s.dupAckCount != 3 {
+	// Do not enter fast recovery until we reach nDupAckThreshold.
+	if s.dupAckCount < nDupAckThreshold {
 		return false
 	}
 
@@ -490,6 +497,8 @@ func (s *sender) checkDuplicateAck(seg *segment) bool {
 		s.dupAckCount = 0
 		return false
 	}
+
+	s.cc.HandleNDupAcks()
 	s.enterFastRecovery()
 	s.dupAckCount = 0
 	return true
@@ -498,29 +507,6 @@ func (s *sender) checkDuplicateAck(seg *segment) bool {
 // updateCwnd updates the congestion window based on the number of packets that
 // were acknowledged.
 func (s *sender) updateCwnd(packetsAcked int) {
-	if s.sndCwnd < s.sndSsthresh {
-		// Don't let the congestion window cross into the congestion
-		// avoidance range.
-		newcwnd := s.sndCwnd + packetsAcked
-		if newcwnd >= s.sndSsthresh {
-			newcwnd = s.sndSsthresh
-			s.sndCAAckCount = 0
-		}
-
-		packetsAcked -= newcwnd - s.sndCwnd
-		s.sndCwnd = newcwnd
-		if packetsAcked == 0 {
-			// We've consumed all ack'd packets.
-			return
-		}
-	}
-
-	// Consume the packets in congestion avoidance mode.
-	s.sndCAAckCount += packetsAcked
-	if s.sndCAAckCount >= s.sndCwnd {
-		s.sndCwnd += s.sndCAAckCount / s.sndCwnd
-		s.sndCAAckCount = s.sndCAAckCount % s.sndCwnd
-	}
 }
 
 // handleRcvdSegment is called when a segment is received; it is responsible for
@@ -581,7 +567,7 @@ func (s *sender) handleRcvdSegment(seg *segment) {
 		// If we are not in fast recovery then update the congestion
 		// window based on the number of acknowledged packets.
 		if !s.fr.active {
-			s.updateCwnd(originalOutstanding - s.outstanding)
+			s.cc.Update(originalOutstanding - s.outstanding)
 		}
 
 		// It is possible for s.outstanding to drop below zero if we get
