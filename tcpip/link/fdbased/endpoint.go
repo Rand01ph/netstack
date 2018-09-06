@@ -23,6 +23,7 @@ package fdbased
 
 import (
 	"log"
+	"syscall"
 
 	"github.com/FlowerWrong/netstack/tcpip"
 	"github.com/FlowerWrong/netstack/tcpip/buffer"
@@ -57,10 +58,15 @@ type endpoint struct {
 	// its end of the communication pipe.
 	closed func(*tcpip.Error)
 
-	vv *buffer.VectorisedView
-	// iovecs   []syscall.Iovec
-	views    []buffer.View
-	attached bool
+	vv         *buffer.VectorisedView
+	iovecs     []syscall.Iovec
+	views      []buffer.View
+	dispatcher stack.NetworkDispatcher
+
+	// handleLocal indicates whether packets destined to itself should be
+	// handled by the netstack internally (true) or be forwarded to the FD
+	// endpoint (false).
+	handleLocal bool
 }
 
 // Options specify the details about the fd-based endpoint to be created.
@@ -73,6 +79,7 @@ type Options struct {
 	Address         tcpip.LinkAddress
 	SaveRestore     bool
 	DisconnectOk    bool
+	HandleLocal     bool
 }
 
 // New creates a new fd-based endpoint.
@@ -100,16 +107,15 @@ func New(ifce *water.Interface, opts *Options) tcpip.LinkEndpointID {
 	}
 
 	e := &endpoint{
-		ifce:    ifce,
-		fd:      opts.FD,
-		mtu:     opts.MTU,
-		caps:    caps,
-		closed:  opts.ClosedFunc,
-		addr:    opts.Address,
-		hdrSize: hdrSize,
-		views:   make([]buffer.View, 1),
-		// views:   make([]buffer.View, len(BufConfig)),
-		// iovecs:  make([]syscall.Iovec, len(BufConfig)),
+		fd:          opts.FD,
+		mtu:         opts.MTU,
+		caps:        caps,
+		closed:      opts.ClosedFunc,
+		addr:        opts.Address,
+		hdrSize:     hdrSize,
+		views:       make([]buffer.View, len(BufConfig)),
+		iovecs:      make([]syscall.Iovec, len(BufConfig)),
+		handleLocal: opts.HandleLocal,
 	}
 	vv := buffer.NewVectorisedView(0, e.views)
 	e.vv = &vv
@@ -119,16 +125,16 @@ func New(ifce *water.Interface, opts *Options) tcpip.LinkEndpointID {
 // Attach launches the goroutine that reads packets from the file descriptor and
 // dispatches them via the provided dispatcher.
 func (e *endpoint) Attach(dispatcher stack.NetworkDispatcher) {
-	e.attached = true
+	e.dispatcher = dispatcher
 	// Link endpoints are not savable. When transportation endpoints are
 	// saved, they stop sending outgoing packets and all incoming packets
 	// are rejected.
-	go e.dispatchLoop(dispatcher)
+	go e.dispatchLoop()
 }
 
 // IsAttached implements stack.LinkEndpoint.IsAttached.
 func (e *endpoint) IsAttached() bool {
-	return e.attached
+	return e.dispatcher != nil
 }
 
 // MTU implements stack.LinkEndpoint.MTU. It returns the value initialized
@@ -154,7 +160,15 @@ func (e *endpoint) LinkAddress() tcpip.LinkAddress {
 
 // WritePacket writes outbound packets to the file descriptor. If it is not
 // currently writable, the packet is dropped.
-func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload buffer.View, protocol tcpip.NetworkProtocolNumber) *tcpip.Error {
+func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload buffer.VectorisedView, protocol tcpip.NetworkProtocolNumber) *tcpip.Error {
+	if e.handleLocal && r.LocalAddress != "" && r.LocalAddress == r.RemoteAddress {
+		views := make([]buffer.View, 1, 1+len(payload.Views()))
+		views[0] = hdr.View()
+		views = append(views, payload.Views()...)
+		vv := buffer.NewVectorisedView(len(views[0])+payload.Size(), views)
+		e.dispatcher.DeliverNetworkPacket(e, r.RemoteLinkAddress, protocol, &vv)
+		return nil
+	}
 	if e.hdrSize > 0 {
 		// Add ethernet header if needed.
 		eth := header.Ethernet(hdr.Prepend(header.EthernetMinimumSize))
@@ -246,17 +260,17 @@ func (e *endpoint) dispatch(d stack.NetworkDispatcher, largeV buffer.View) (bool
 	e.vv.SetSize(n)
 	e.vv.TrimFront(e.hdrSize)
 
-	d.DeliverNetworkPacket(e, addr, p, e.vv)
+	e.dispatcher.DeliverNetworkPacket(e, addr, p, e.vv)
 
 	return true, nil
 }
 
 // dispatchLoop reads packets from the file descriptor in a loop and dispatches
 // them to the network stack.
-func (e *endpoint) dispatchLoop(d stack.NetworkDispatcher) *tcpip.Error {
+func (e *endpoint) dispatchLoop() *tcpip.Error {
 	v := buffer.NewView(header.MaxIPPacketSize)
 	for {
-		cont, err := e.dispatch(d, v)
+		cont, err := e.dispatch(v)
 		if err != nil || !cont {
 			if e.closed != nil {
 				e.closed(err)

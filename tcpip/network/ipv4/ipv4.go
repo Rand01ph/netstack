@@ -44,6 +44,10 @@ const (
 
 	// buckets is the number of identifier buckets.
 	buckets = 2048
+
+	// defaultIPv4TTL is the defautl TTL for IPv4 Packets egressed by
+	// Netstack.
+	defaultIPv4TTL = 255
 )
 
 type address [header.IPv4AddressSize]byte
@@ -67,7 +71,7 @@ func newEndpoint(nicid tcpip.NICID, addr tcpip.Address, dispatcher stack.Transpo
 		fragmentation: fragmentation.NewFragmentation(fragmentation.HighFragThreshold, fragmentation.LowFragThreshold, fragmentation.DefaultReassembleTimeout),
 	}
 	copy(e.address[:], addr)
-	e.id = stack.NetworkEndpointID{tcpip.Address(e.address[:])}
+	e.id = stack.NetworkEndpointID{LocalAddress: tcpip.Address(e.address[:])}
 
 	go e.echoReplier()
 
@@ -102,9 +106,9 @@ func (e *endpoint) MaxHeaderLength() uint16 {
 }
 
 // WritePacket writes a packet to the given destination address and protocol.
-func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload buffer.View, protocol tcpip.TransportProtocolNumber) *tcpip.Error {
+func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload buffer.VectorisedView, protocol tcpip.TransportProtocolNumber) *tcpip.Error {
 	ip := header.IPv4(hdr.Prepend(header.IPv4MinimumSize))
-	length := uint16(hdr.UsedLength() + len(payload))
+	length := uint16(hdr.UsedLength() + payload.Size())
 	id := uint32(0)
 	if length > header.IPv4MaximumHeaderSize+8 {
 		// Packets of 68 bytes or less are required by RFC 791 to not be
@@ -116,12 +120,13 @@ func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload 
 		IHL:         header.IPv4MinimumSize,
 		TotalLength: length,
 		ID:          uint16(id),
-		TTL:         65,
+		TTL:         defaultIPv4TTL,
 		Protocol:    uint8(protocol),
 		SrcAddr:     r.LocalAddress,
 		DstAddr:     r.RemoteAddress,
 	})
 	ip.SetChecksum(^ip.CalculateChecksum())
+	r.Stats().IP.PacketsSent.Increment()
 
 	return e.linkEP.WritePacket(r, hdr, payload, ProtocolNumber)
 }
@@ -154,6 +159,7 @@ func (e *endpoint) HandlePacket(r *stack.Route, vv *buffer.VectorisedView) {
 		e.handleICMP(r, vv)
 		return
 	}
+	r.Stats().IP.PacketsDelivered.Increment()
 	e.dispatcher.DeliverTransportPacket(r, p, vv)
 }
 

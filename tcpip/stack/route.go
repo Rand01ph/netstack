@@ -50,12 +50,13 @@ type Route struct {
 
 // makeRoute initializes a new route. It takes ownership of the provided
 // reference to a network endpoint.
-func makeRoute(netProto tcpip.NetworkProtocolNumber, localAddr, remoteAddr tcpip.Address, ref *referencedNetworkEndpoint) Route {
+func makeRoute(netProto tcpip.NetworkProtocolNumber, localAddr, remoteAddr tcpip.Address, localLinkAddr tcpip.LinkAddress, ref *referencedNetworkEndpoint) Route {
 	return Route{
-		NetProto:      netProto,
-		LocalAddress:  localAddr,
-		RemoteAddress: remoteAddr,
-		ref:           ref,
+		NetProto:         netProto,
+		LocalAddress:     localAddr,
+		LocalLinkAddress: localLinkAddr,
+		RemoteAddress:    remoteAddr,
+		ref:              ref,
 	}
 }
 
@@ -67,6 +68,11 @@ func (r *Route) NICID() tcpip.NICID {
 // MaxHeaderLength forwards the call to the network endpoint's implementation.
 func (r *Route) MaxHeaderLength() uint16 {
 	return r.ref.ep.MaxHeaderLength()
+}
+
+// Stats returns a mutable copy of current stats.
+func (r *Route) Stats() tcpip.Stats {
+	return r.ref.nic.stack.Stats()
 }
 
 // PseudoHeaderChecksum forwards the call to the network endpoint's
@@ -92,6 +98,11 @@ func (r *Route) Resolve(waker *sleep.Waker) *tcpip.Error {
 
 	nextAddr := r.NextHop
 	if nextAddr == "" {
+		// Local link address is already known.
+		if r.RemoteAddress == r.LocalAddress {
+			r.RemoteLinkAddress = r.LocalLinkAddress
+			return nil
+		}
 		nextAddr = r.RemoteAddress
 	}
 	linkAddr, err := r.ref.linkCache.GetLinkAddress(r.ref.nic.ID(), nextAddr, r.LocalAddress, r.NetProto, waker)
@@ -118,8 +129,12 @@ func (r *Route) IsResolutionRequired() bool {
 }
 
 // WritePacket writes the packet through the given route.
-func (r *Route) WritePacket(hdr *buffer.Prependable, payload buffer.View, protocol tcpip.TransportProtocolNumber) *tcpip.Error {
-	return r.ref.ep.WritePacket(r, hdr, payload, protocol)
+func (r *Route) WritePacket(hdr *buffer.Prependable, payload buffer.VectorisedView, protocol tcpip.TransportProtocolNumber) *tcpip.Error {
+	err := r.ref.ep.WritePacket(r, hdr, payload, protocol)
+	if err == tcpip.ErrNoRoute {
+		r.Stats().IP.OutgoingPacketErrors.Increment()
+	}
+	return err
 }
 
 // MTU returns the MTU of the underlying network endpoint.

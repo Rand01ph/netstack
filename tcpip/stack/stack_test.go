@@ -19,6 +19,7 @@ package stack_test
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/FlowerWrong/netstack/tcpip"
@@ -104,7 +105,7 @@ func (f *fakeNetworkEndpoint) Capabilities() stack.LinkEndpointCapabilities {
 	return f.linkEP.Capabilities()
 }
 
-func (f *fakeNetworkEndpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload buffer.View, protocol tcpip.TransportProtocolNumber) *tcpip.Error {
+func (f *fakeNetworkEndpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload buffer.VectorisedView, protocol tcpip.TransportProtocolNumber) *tcpip.Error {
 	// Increment the sent packet count in the protocol descriptor.
 	f.proto.sendPacketCount[int(r.RemoteAddress[0])%len(f.proto.sendPacketCount)]++
 
@@ -268,8 +269,7 @@ func sendTo(t *testing.T, s *stack.Stack, addr tcpip.Address) {
 	defer r.Release()
 
 	hdr := buffer.NewPrependable(int(r.MaxHeaderLength()))
-	err = r.WritePacket(&hdr, nil, fakeTransNumber)
-	if err != nil {
+	if err := r.WritePacket(&hdr, buffer.VectorisedView{}, fakeTransNumber); err != nil {
 		t.Errorf("WritePacket failed: %v", err)
 		return
 	}
@@ -760,6 +760,102 @@ func TestNetworkOptions(t *testing.T) {
 		if tc.verifier != nil {
 			tc.verifier(t, s.NetworkProtocolInstance(fakeNetNumber))
 		}
+	}
+}
+
+func TestSubnetAddRemove(t *testing.T) {
+	s := stack.New([]string{"fakeNet"}, nil, stack.Options{})
+	id, _ := channel.New(10, defaultMTU, "")
+	if err := s.CreateNIC(1, id); err != nil {
+		t.Fatalf("CreateNIC failed: %v", err)
+	}
+
+	addr := tcpip.Address("\x01\x01\x01\x01")
+	mask := tcpip.AddressMask(strings.Repeat("\xff", len(addr)))
+	subnet, err := tcpip.NewSubnet(addr, mask)
+	if err != nil {
+		t.Fatalf("NewSubnet failed: %v", err)
+	}
+
+	if contained, err := s.ContainsSubnet(1, subnet); err != nil {
+		t.Fatalf("ContainsSubnet failed: %v", err)
+	} else if contained {
+		t.Fatal("got s.ContainsSubnet(...) = true, want = false")
+	}
+
+	if err := s.AddSubnet(1, fakeNetNumber, subnet); err != nil {
+		t.Fatalf("AddSubnet failed: %v", err)
+	}
+
+	if contained, err := s.ContainsSubnet(1, subnet); err != nil {
+		t.Fatalf("ContainsSubnet failed: %v", err)
+	} else if !contained {
+		t.Fatal("got s.ContainsSubnet(...) = false, want = true")
+	}
+
+	if err := s.RemoveSubnet(1, subnet); err != nil {
+		t.Fatalf("RemoveSubnet failed: %v", err)
+	}
+
+	if contained, err := s.ContainsSubnet(1, subnet); err != nil {
+		t.Fatalf("ContainsSubnet failed: %v", err)
+	} else if contained {
+		t.Fatal("got s.ContainsSubnet(...) = true, want = false")
+	}
+}
+
+func TestGetMainNICAddress(t *testing.T) {
+	s := stack.New([]string{"fakeNet"}, nil, stack.Options{})
+	id, _ := channel.New(10, defaultMTU, "")
+	if err := s.CreateNIC(1, id); err != nil {
+		t.Fatalf("CreateNIC failed: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		address tcpip.Address
+	}{
+		{"IPv4", "\x01\x01\x01\x01"},
+		{"IPv6", "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			address := tc.address
+			mask := tcpip.AddressMask(strings.Repeat("\xff", len(address)))
+			subnet, err := tcpip.NewSubnet(address, mask)
+			if err != nil {
+				t.Fatalf("NewSubnet failed: %v", err)
+			}
+
+			if err := s.AddAddress(1, fakeNetNumber, address); err != nil {
+				t.Fatalf("AddAddress failed: %v", err)
+			}
+
+			if err := s.AddSubnet(1, fakeNetNumber, subnet); err != nil {
+				t.Fatalf("AddSubnet failed: %v", err)
+			}
+
+			// Check that we get the right initial address and subnet.
+			if gotAddress, gotSubnet, err := s.GetMainNICAddress(1, fakeNetNumber); err != nil {
+				t.Fatalf("GetMainNICAddress failed: %v", err)
+			} else if gotAddress != address {
+				t.Fatalf("got GetMainNICAddress = (%v, ...), want = (%v, ...)", gotAddress, address)
+			} else if gotSubnet != subnet {
+				t.Fatalf("got GetMainNICAddress = (..., %v), want = (..., %v)", gotSubnet, subnet)
+			}
+
+			if err := s.RemoveSubnet(1, subnet); err != nil {
+				t.Fatalf("RemoveSubnet failed: %v", err)
+			}
+
+			if err := s.RemoveAddress(1, address); err != nil {
+				t.Fatalf("RemoveAddress failed: %v", err)
+			}
+
+			// Check that we get an error after removal.
+			if _, _, err := s.GetMainNICAddress(1, fakeNetNumber); err != tcpip.ErrNoLinkAddress {
+				t.Fatalf("got s.GetMainNICAddress(...) = %v, want = %v", err, tcpip.ErrNoLinkAddress)
+			}
+		})
 	}
 }
 

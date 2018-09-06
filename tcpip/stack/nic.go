@@ -22,6 +22,7 @@ import (
 	"github.com/FlowerWrong/netstack/ilist"
 	"github.com/FlowerWrong/netstack/tcpip"
 	"github.com/FlowerWrong/netstack/tcpip/buffer"
+	"github.com/FlowerWrong/netstack/tcpip/header"
 )
 
 // NIC represents a "network interface card" to which the networking stack is
@@ -74,11 +75,64 @@ func (n *NIC) setPromiscuousMode(enable bool) {
 	n.mu.Unlock()
 }
 
+func (n *NIC) isPromiscuousMode() bool {
+	n.mu.RLock()
+	rv := n.promiscuous
+	n.mu.RUnlock()
+	return rv
+}
+
 // setSpoofing enables or disables address spoofing.
 func (n *NIC) setSpoofing(enable bool) {
 	n.mu.Lock()
 	n.spoofing = enable
 	n.mu.Unlock()
+}
+
+func (n *NIC) getMainNICAddress(protocol tcpip.NetworkProtocolNumber) (tcpip.Address, tcpip.Subnet, *tcpip.Error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	var r *referencedNetworkEndpoint
+
+	// Check for a primary endpoint.
+	if list, ok := n.primary[protocol]; ok {
+		for e := list.Front(); e != nil; e = e.Next() {
+			ref := e.(*referencedNetworkEndpoint)
+			if ref.holdsInsertRef && ref.tryIncRef() {
+				r = ref
+				break
+			}
+		}
+
+	}
+
+	// If no primary endpoints then check for other endpoints.
+	if r == nil {
+		for _, ref := range n.endpoints {
+			if ref.holdsInsertRef && ref.tryIncRef() {
+				r = ref
+				break
+			}
+		}
+	}
+
+	if r == nil {
+		return "", tcpip.Subnet{}, tcpip.ErrNoLinkAddress
+	}
+
+	address := r.ep.ID().LocalAddress
+	r.decRef()
+
+	// Find the least-constrained matching subnet for the address, if one
+	// exists, and return it.
+	var subnet tcpip.Subnet
+	for _, s := range n.subnets {
+		if s.Contains(address) && !subnet.Contains(s.ID()) {
+			subnet = s
+		}
+	}
+	return address, subnet, nil
 }
 
 // primaryEndpoint returns the primary endpoint of n for the given network
@@ -164,7 +218,7 @@ func (n *NIC) addAddressLocked(protocol tcpip.NetworkProtocolNumber, addr tcpip.
 
 	// Set up cache if link address resolution exists for this protocol.
 	if n.linkEP.Capabilities()&CapabilityResolutionRequired != 0 {
-		if linkRes := n.stack.linkAddrResolvers[protocol]; linkRes != nil {
+		if _, ok := n.stack.linkAddrResolvers[protocol]; ok {
 			ref.linkCache = n.stack
 		}
 	}
@@ -213,6 +267,32 @@ func (n *NIC) AddSubnet(protocol tcpip.NetworkProtocolNumber, subnet tcpip.Subne
 	n.mu.Lock()
 	n.subnets = append(n.subnets, subnet)
 	n.mu.Unlock()
+}
+
+// RemoveSubnet removes the given subnet from n.
+func (n *NIC) RemoveSubnet(subnet tcpip.Subnet) {
+	n.mu.Lock()
+
+	// Use the same underlying array.
+	tmp := n.subnets[:0]
+	for _, sub := range n.subnets {
+		if sub != subnet {
+			tmp = append(tmp, sub)
+		}
+	}
+	n.subnets = tmp
+
+	n.mu.Unlock()
+}
+
+// ContainsSubnet reports whether this NIC contains the given subnet.
+func (n *NIC) ContainsSubnet(subnet tcpip.Subnet) bool {
+	for _, s := range n.Subnets() {
+		if s == subnet {
+			return true
+		}
+	}
+	return false
 }
 
 // Subnets returns the Subnets associated with this NIC.
@@ -282,12 +362,16 @@ func (n *NIC) RemoveAddress(addr tcpip.Address) *tcpip.Error {
 func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, remoteLinkAddr tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, vv *buffer.VectorisedView) {
 	netProto, ok := n.stack.networkProtocols[protocol]
 	if !ok {
-		atomic.AddUint64(&n.stack.stats.UnknownProtocolRcvdPackets, 1)
+		n.stack.stats.UnknownProtocolRcvdPackets.Increment()
 		return
 	}
 
+	if netProto.Number() == header.IPv4ProtocolNumber || netProto.Number() == header.IPv6ProtocolNumber {
+		n.stack.stats.IP.PacketsReceived.Increment()
+	}
+
 	if len(vv.First()) < netProto.MinimumPacketSize() {
-		atomic.AddUint64(&n.stack.stats.MalformedRcvdPackets, 1)
+		n.stack.stats.MalformedRcvdPackets.Increment()
 		return
 	}
 
@@ -300,33 +384,34 @@ func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, remoteLinkAddr tcpip.Lin
 	}
 
 	n.mu.RLock()
-	ref := n.endpoints[id]
-	if ref != nil && !ref.tryIncRef() {
+	ref, ok := n.endpoints[id]
+	if ok && !ref.tryIncRef() {
 		ref = nil
 	}
-	promiscuous := n.promiscuous
-	subnets := n.subnets
-	n.mu.RUnlock()
-
-	if ref == nil {
+	if ref != nil {
+		n.mu.RUnlock()
+	} else {
+		promiscuous := n.promiscuous
 		// Check if the packet is for a subnet this NIC cares about.
 		if !promiscuous {
-			for _, sn := range subnets {
+			for _, sn := range n.subnets {
 				if sn.Contains(dst) {
 					promiscuous = true
 					break
 				}
 			}
 		}
+		n.mu.RUnlock()
 		if promiscuous {
 			// Try again with the lock in exclusive mode. If we still can't
 			// get the endpoint, create a new "temporary" one. It will only
 			// exist while there's a route through it.
 			n.mu.Lock()
-			ref = n.endpoints[id]
-			if ref == nil || !ref.tryIncRef() {
-				ref, _ = n.addAddressLocked(protocol, dst, true)
-				if ref != nil {
+			ref, ok = n.endpoints[id]
+			if !ok || !ref.tryIncRef() {
+				var err *tcpip.Error
+				ref, err = n.addAddressLocked(protocol, dst, true)
+				if err == nil {
 					ref.holdsInsertRef = false
 				}
 			}
@@ -335,12 +420,11 @@ func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, remoteLinkAddr tcpip.Lin
 	}
 
 	if ref == nil {
-		atomic.AddUint64(&n.stack.stats.UnknownNetworkEndpointRcvdPackets, 1)
+		n.stack.stats.IP.InvalidAddressesReceived.Increment()
 		return
 	}
 
-	r := makeRoute(protocol, dst, src, ref)
-	r.LocalLinkAddress = linkEP.LinkAddress()
+	r := makeRoute(protocol, dst, src, linkEP.LinkAddress(), ref)
 	r.RemoteLinkAddress = remoteLinkAddr
 	ref.ep.HandlePacket(&r, vv)
 	ref.decRef()
@@ -351,19 +435,19 @@ func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, remoteLinkAddr tcpip.Lin
 func (n *NIC) DeliverTransportPacket(r *Route, protocol tcpip.TransportProtocolNumber, vv *buffer.VectorisedView) {
 	state, ok := n.stack.transportProtocols[protocol]
 	if !ok {
-		atomic.AddUint64(&n.stack.stats.UnknownProtocolRcvdPackets, 1)
+		n.stack.stats.UnknownProtocolRcvdPackets.Increment()
 		return
 	}
 
 	transProto := state.proto
 	if len(vv.First()) < transProto.MinimumPacketSize() {
-		atomic.AddUint64(&n.stack.stats.MalformedRcvdPackets, 1)
+		n.stack.stats.MalformedRcvdPackets.Increment()
 		return
 	}
 
 	srcPort, dstPort, err := transProto.ParsePorts(vv.First())
 	if err != nil {
-		atomic.AddUint64(&n.stack.stats.MalformedRcvdPackets, 1)
+		n.stack.stats.MalformedRcvdPackets.Increment()
 		return
 	}
 
@@ -385,7 +469,7 @@ func (n *NIC) DeliverTransportPacket(r *Route, protocol tcpip.TransportProtocolN
 	// We could not find an appropriate destination for this packet, so
 	// deliver it to the global handler.
 	if !transProto.HandleUnknownDestinationPacket(r, id, vv) {
-		atomic.AddUint64(&n.stack.stats.MalformedRcvdPackets, 1)
+		n.stack.stats.MalformedRcvdPackets.Increment()
 	}
 }
 

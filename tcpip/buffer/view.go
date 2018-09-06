@@ -54,6 +54,8 @@ func (v *View) ToVectorisedView(views [1]View) VectorisedView {
 
 // VectorisedView is a vectorised version of View using non contigous memory.
 // It supports all the convenience methods supported by View.
+//
+// +stateify savable
 type VectorisedView struct {
 	views []View
 	size  int
@@ -119,7 +121,6 @@ func (vv *VectorisedView) Clone(buffer []View) VectorisedView {
 }
 
 // First returns the first view of the vectorised view.
-// It panics if the vectorised view is empty.
 func (vv *VectorisedView) First() View {
 	if len(vv.views) == 0 {
 		return nil
@@ -151,7 +152,7 @@ func (vv *VectorisedView) Size() int {
 	return vv.size
 }
 
-// ToView returns the a single view containing the content of the vectorised view.
+// ToView returns a single view containing the content of the vectorised view.
 func (vv *VectorisedView) ToView() View {
 	v := make([]byte, vv.size)
 	u := v

@@ -25,6 +25,7 @@ import (
 	"github.com/FlowerWrong/netstack/waiter"
 )
 
+// +stateify savable
 type udpPacket struct {
 	udpPacketEntry
 	senderAddress tcpip.FullAddress
@@ -49,6 +50,8 @@ const (
 // between users of the endpoint and the protocol implementation; it is legal to
 // have concurrent goroutines make calls into the endpoint, they are properly
 // synchronized.
+//
+// +stateify savable
 type endpoint struct {
 	// The following fields are initialized at creation time and do not
 	// change throughout the lifetime of the endpoint.
@@ -76,6 +79,9 @@ type endpoint struct {
 	route      stack.Route
 	dstPort    uint16
 	v6only     bool
+
+	// shutdownFlags represent the current shutdown state of the endpoint.
+	shutdownFlags tcpip.ShutdownFlags
 
 	// effectiveNetProtos contains the network protocols actually in use. In
 	// most cases it will only contain "netProto", but in cases like IPv6
@@ -126,6 +132,7 @@ func NewConnectedEndpoint(stack *stack.Stack, r *stack.Route, id stack.Transport
 // associated with it.
 func (e *endpoint) Close() {
 	e.mu.Lock()
+	e.shutdownFlags = tcpip.ShutdownRead | tcpip.ShutdownWrite
 
 	switch e.state {
 	case stateBound, stateConnected:
@@ -238,6 +245,11 @@ func (e *endpoint) Write(p tcpip.Payload, opts tcpip.WriteOptions) (uintptr, *tc
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
+	// If we've shutdown with SHUT_WR we are in an invalid state for sending.
+	if e.shutdownFlags&tcpip.ShutdownWrite != 0 {
+		return 0, tcpip.ErrClosedForSend
+	}
+
 	// Prepare for write.
 	for {
 		retry, err := e.prepareForWrite(to)
@@ -320,7 +332,11 @@ func (e *endpoint) Write(p tcpip.Payload, opts tcpip.WriteOptions) (uintptr, *tc
 	if err != nil {
 		return 0, err
 	}
-	sendUDP(route, v, e.id.LocalPort, dstPort)
+
+	vv := buffer.NewVectorisedView(len(v), []buffer.View{v})
+	if err := sendUDP(route, vv, e.id.LocalPort, dstPort); err != nil {
+		return 0, err
+	}
 	return uintptr(len(v)), nil
 }
 
@@ -416,14 +432,14 @@ func (e *endpoint) GetSockOpt(opt interface{}) *tcpip.Error {
 
 // sendUDP sends a UDP segment via the provided network endpoint and under the
 // provided identity.
-func sendUDP(r *stack.Route, data buffer.View, localPort, remotePort uint16) *tcpip.Error {
+func sendUDP(r *stack.Route, data buffer.VectorisedView, localPort, remotePort uint16) *tcpip.Error {
 	// Allocate a buffer for the UDP header.
 	hdr := buffer.NewPrependable(header.UDPMinimumSize + int(r.MaxHeaderLength()))
 
 	// Initialize the header.
 	udp := header.UDP(hdr.Prepend(header.UDPMinimumSize))
 
-	length := uint16(hdr.UsedLength()) + uint16(len(data))
+	length := uint16(hdr.UsedLength() + data.Size())
 	udp.Encode(&header.UDPFields{
 		SrcPort: localPort,
 		DstPort: remotePort,
@@ -433,12 +449,14 @@ func sendUDP(r *stack.Route, data buffer.View, localPort, remotePort uint16) *tc
 	// Only calculate the checksum if offloading isn't supported.
 	if r.Capabilities()&stack.CapabilityChecksumOffload == 0 {
 		xsum := r.PseudoHeaderChecksum(ProtocolNumber)
-		if data != nil {
-			xsum = header.Checksum(data, xsum)
+		for _, v := range data.Views() {
+			xsum = header.Checksum(v, xsum)
 		}
-
 		udp.SetChecksum(^udp.CalculateChecksum(xsum, length))
 	}
+
+	// Track count of packets sent.
+	r.Stats().UDP.PacketsSent.Increment()
 
 	return r.WritePacket(&hdr, data, ProtocolNumber)
 }
@@ -564,12 +582,14 @@ func (*endpoint) ConnectEndpoint(tcpip.Endpoint) *tcpip.Error {
 // Shutdown closes the read and/or write end of the endpoint connection
 // to its peer.
 func (e *endpoint) Shutdown(flags tcpip.ShutdownFlags) *tcpip.Error {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
 
 	if e.state != stateConnected {
 		return tcpip.ErrNotConnected
 	}
+
+	e.shutdownFlags |= flags
 
 	if flags&tcpip.ShutdownRead != 0 {
 		e.rcvMu.Lock()
@@ -749,15 +769,18 @@ func (e *endpoint) HandlePacket(r *stack.Route, id stack.TransportEndpointID, vv
 	hdr := header.UDP(vv.First())
 	if int(hdr.Length()) > vv.Size() {
 		// Malformed packet.
+		e.stack.Stats().UDP.MalformedPacketsReceived.Increment()
 		return
 	}
 
 	vv.TrimFront(header.UDPMinimumSize)
 
 	e.rcvMu.Lock()
+	e.stack.Stats().UDP.PacketsReceived.Increment()
 
 	// Drop the packet if our buffer is currently full.
 	if !e.rcvReady || e.rcvClosed || e.rcvBufSize >= e.rcvBufSizeMax {
+		e.stack.Stats().UDP.ReceiveBufferErrors.Increment()
 		e.rcvMu.Unlock()
 		return
 	}

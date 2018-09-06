@@ -26,6 +26,7 @@ import (
 	"github.com/google/netstack/waiter"
 )
 
+// +stateify savable
 type pingPacket struct {
 	pingPacketEntry
 	senderAddress tcpip.FullAddress
@@ -55,6 +56,7 @@ type endpoint struct {
 	// change throughout the lifetime of the endpoint.
 	stack       *stack.Stack
 	netProto    tcpip.NetworkProtocolNumber
+	transProto  tcpip.TransportProtocolNumber
 	waiterQueue *waiter.Queue
 
 	// The following fields are used to manage the receive queue, and are
@@ -70,18 +72,21 @@ type endpoint struct {
 	// The following fields are protected by the mu mutex.
 	mu         sync.RWMutex
 	sndBufSize int
-	id         stack.TransportEndpointID
-	state      endpointState
-	bindNICID  tcpip.NICID
-	bindAddr   tcpip.Address
-	regNICID   tcpip.NICID
-	route      stack.Route
+	// shutdownFlags represent the current shutdown state of the endpoint.
+	shutdownFlags tcpip.ShutdownFlags
+	id            stack.TransportEndpointID
+	state         endpointState
+	bindNICID     tcpip.NICID
+	bindAddr      tcpip.Address
+	regNICID      tcpip.NICID
+	route         stack.Route
 }
 
-func newEndpoint(stack *stack.Stack, netProto tcpip.NetworkProtocolNumber, waiterQueue *waiter.Queue) *endpoint {
+func newEndpoint(stack *stack.Stack, netProto tcpip.NetworkProtocolNumber, transProto tcpip.TransportProtocolNumber, waiterQueue *waiter.Queue) *endpoint {
 	return &endpoint{
 		stack:         stack,
 		netProto:      netProto,
+		transProto:    transProto,
 		waiterQueue:   waiterQueue,
 		rcvBufSizeMax: 32 * 1024,
 		sndBufSize:    32 * 1024,
@@ -92,10 +97,10 @@ func newEndpoint(stack *stack.Stack, netProto tcpip.NetworkProtocolNumber, waite
 // associated with it.
 func (e *endpoint) Close() {
 	e.mu.Lock()
-
+	e.shutdownFlags = tcpip.ShutdownRead | tcpip.ShutdownWrite
 	switch e.state {
 	case stateBound, stateConnected:
-		e.stack.UnregisterTransportEndpoint(e.regNICID, []tcpip.NetworkProtocolNumber{e.netProto}, ProtocolNumber4, e.id)
+		e.stack.UnregisterTransportEndpoint(e.regNICID, []tcpip.NetworkProtocolNumber{e.netProto}, e.transProto, e.id)
 	}
 
 	// Close the receive list and drain it.
@@ -204,6 +209,11 @@ func (e *endpoint) Write(p tcpip.Payload, opts tcpip.WriteOptions) (uintptr, *tc
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
+	// If we've shutdown with SHUT_WR we are in an invalid state for sending.
+	if e.shutdownFlags&tcpip.ShutdownWrite != 0 {
+		return 0, tcpip.ErrClosedForSend
+	}
+
 	// Prepare for write.
 	for {
 		retry, err := e.prepareForWrite(to)
@@ -289,7 +299,7 @@ func (e *endpoint) Write(p tcpip.Payload, opts tcpip.WriteOptions) (uintptr, *tc
 		err = sendPing4(route, e.id.LocalPort, v)
 
 	case header.IPv6ProtocolNumber:
-		// TODO: Support IPv6.
+		err = sendPing6(route, e.id.LocalPort, v)
 	}
 
 	return uintptr(len(v)), err
@@ -374,7 +384,32 @@ func sendPing4(r *stack.Route, ident uint16, data buffer.View) *tcpip.Error {
 	icmpv4.SetChecksum(0)
 	icmpv4.SetChecksum(^header.Checksum(icmpv4, header.Checksum(data, 0)))
 
-	return r.WritePacket(&hdr, data, header.ICMPv4ProtocolNumber)
+	vv := buffer.NewVectorisedView(len(data), []buffer.View{data})
+	return r.WritePacket(&hdr, vv, header.ICMPv4ProtocolNumber)
+}
+
+func sendPing6(r *stack.Route, ident uint16, data buffer.View) *tcpip.Error {
+	if len(data) < header.ICMPv6EchoMinimumSize {
+		return tcpip.ErrInvalidEndpointState
+	}
+
+	// Set the ident. Sequence number is provided by the user.
+	binary.BigEndian.PutUint16(data[header.ICMPv6MinimumSize:], ident)
+
+	hdr := buffer.NewPrependable(header.ICMPv6EchoMinimumSize + int(r.MaxHeaderLength()))
+
+	icmpv6 := header.ICMPv6(hdr.Prepend(header.ICMPv6EchoMinimumSize))
+	copy(icmpv6, data)
+	data = data[header.ICMPv6EchoMinimumSize:]
+
+	if icmpv6.Type() != header.ICMPv6EchoRequest || icmpv6.Code() != 0 {
+		return tcpip.ErrInvalidEndpointState
+	}
+
+	icmpv6.SetChecksum(0)
+	icmpv6.SetChecksum(^header.Checksum(icmpv6, header.Checksum(data, 0)))
+	vv := buffer.NewVectorisedView(len(data), []buffer.View{data})
+	return r.WritePacket(&hdr, vv, header.ICMPv6ProtocolNumber)
 }
 
 func (e *endpoint) checkV4Mapped(addr *tcpip.FullAddress, allowMismatch bool) (tcpip.NetworkProtocolNumber, *tcpip.Error) {
@@ -464,8 +499,9 @@ func (*endpoint) ConnectEndpoint(tcpip.Endpoint) *tcpip.Error {
 // Shutdown closes the read and/or write end of the endpoint connection
 // to its peer.
 func (e *endpoint) Shutdown(flags tcpip.ShutdownFlags) *tcpip.Error {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.shutdownFlags |= flags
 
 	if e.state != stateConnected {
 		return tcpip.ErrNotConnected
@@ -499,14 +535,14 @@ func (e *endpoint) registerWithStack(nicid tcpip.NICID, netProtos []tcpip.Networ
 	if id.LocalPort != 0 {
 		// The endpoint already has a local port, just attempt to
 		// register it.
-		err := e.stack.RegisterTransportEndpoint(nicid, netProtos, ProtocolNumber4, id, e)
+		err := e.stack.RegisterTransportEndpoint(nicid, netProtos, e.transProto, id, e)
 		return id, err
 	}
 
 	// We need to find a port for the endpoint.
 	_, err := e.stack.PickEphemeralPort(func(p uint16) (bool, *tcpip.Error) {
 		id.LocalPort = p
-		err := e.stack.RegisterTransportEndpoint(nicid, netProtos, ProtocolNumber4, id, e)
+		err := e.stack.RegisterTransportEndpoint(nicid, netProtos, e.transProto, id, e)
 		switch err {
 		case nil:
 			return true, nil
@@ -555,7 +591,7 @@ func (e *endpoint) bindLocked(addr tcpip.FullAddress, commit func() *tcpip.Error
 	if commit != nil {
 		if err := commit(); err != nil {
 			// Unregister, the commit failed.
-			e.stack.UnregisterTransportEndpoint(addr.NIC, netProtos, ProtocolNumber4, id)
+			e.stack.UnregisterTransportEndpoint(addr.NIC, netProtos, e.transProto, id)
 			return err
 		}
 	}

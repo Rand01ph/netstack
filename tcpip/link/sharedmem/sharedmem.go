@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// +build linux
+
 // Package sharedmem provides the implemention of data-link layer endpoints
 // backed by shared memory.
 //
@@ -182,7 +184,7 @@ func (e *endpoint) LinkAddress() tcpip.LinkAddress {
 
 // WritePacket writes outbound packets to the file descriptor. If it is not
 // currently writable, the packet is dropped.
-func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload buffer.View, protocol tcpip.NetworkProtocolNumber) *tcpip.Error {
+func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload buffer.VectorisedView, protocol tcpip.NetworkProtocolNumber) *tcpip.Error {
 	// Add the ethernet header here.
 	eth := header.Ethernet(hdr.Prepend(header.EthernetMinimumSize))
 	eth.Encode(&header.EthernetFields{
@@ -191,9 +193,10 @@ func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload 
 		Type:    protocol,
 	})
 
+	v := payload.ToView()
 	// Transmit the packet.
 	e.mu.Lock()
-	ok := e.tx.transmit(hdr.UsedBytes(), payload)
+	ok := e.tx.transmit(hdr.UsedBytes(), v)
 	e.mu.Unlock()
 
 	if !ok {

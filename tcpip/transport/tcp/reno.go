@@ -16,6 +16,8 @@ package tcp
 
 // renoState stores the variables related to TCP New Reno congestion
 // control algorithm.
+//
+// +stateify savable
 type renoState struct {
 	s *sender
 }
@@ -93,4 +95,9 @@ func (r *renoState) HandleRTOExpired() {
 	// RFC 5681, page 7, we must use 1 regardless of the value of the
 	// initial congestion window.
 	r.s.sndCwnd = 1
+}
+
+// PostRecovery implements congestionControl.PostRecovery.
+func (r *renoState) PostRecovery() {
+	// noop.
 }
