@@ -16,6 +16,7 @@ package header
 
 import (
 	"encoding/binary"
+	"strings"
 
 	"github.com/FlowerWrong/netstack/tcpip"
 )
@@ -190,12 +191,14 @@ func IsV4MappedAddress(addr tcpip.Address) bool {
 		return false
 	}
 
-	const prefix = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff"
-	for i := 0; i < len(prefix); i++ {
-		if prefix[i] != addr[i] {
-			return false
-		}
-	}
+	return strings.HasPrefix(string(addr), "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff")
+}
 
-	return true
+// IsV6MulticastAddress determines if the provided address is an IPv6
+// multicast address (anything starting with FF).
+func IsV6MulticastAddress(addr tcpip.Address) bool {
+	if len(addr) != IPv6AddressSize {
+		return false
+	}
+	return addr[0] == 0xff
 }

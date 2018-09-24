@@ -48,7 +48,7 @@ const (
 
 type transportProtocolState struct {
 	proto          TransportProtocol
-	defaultHandler func(*Route, TransportEndpointID, *buffer.VectorisedView) bool
+	defaultHandler func(*Route, TransportEndpointID, buffer.VectorisedView) bool
 }
 
 // TCPProbeFunc is the expected function type for a TCP probe function to be
@@ -283,8 +283,9 @@ type Stack struct {
 
 	linkAddrCache *linkAddrCache
 
-	mu   sync.RWMutex
-	nics map[tcpip.NICID]*NIC
+	mu         sync.RWMutex
+	nics       map[tcpip.NICID]*NIC
+	forwarding bool
 
 	// route is the route table passed in by the user via SetRouteTable(),
 	// it is used by FindRoute() to build a route for a specific
@@ -428,7 +429,7 @@ func (s *Stack) TransportProtocolOption(transport tcpip.TransportProtocolNumber,
 //
 // It must be called only during initialization of the stack. Changing it as the
 // stack is operating is not supported.
-func (s *Stack) SetTransportProtocolHandler(p tcpip.TransportProtocolNumber, h func(*Route, TransportEndpointID, *buffer.VectorisedView) bool) {
+func (s *Stack) SetTransportProtocolHandler(p tcpip.TransportProtocolNumber, h func(*Route, TransportEndpointID, buffer.VectorisedView) bool) {
 	state := s.transportProtocols[p]
 	if state != nil {
 		state.defaultHandler = h
@@ -446,6 +447,22 @@ func (s *Stack) NowNanoseconds() int64 {
 // internally.
 func (s *Stack) Stats() tcpip.Stats {
 	return s.stats
+}
+
+// SetForwarding enables or disables the packet forwarding between NICs.
+func (s *Stack) SetForwarding(enable bool) {
+	// TODO: Expose via /proc/sys/net/ipv4/ip_forward.
+	s.mu.Lock()
+	s.forwarding = enable
+	s.mu.Unlock()
+}
+
+// Forwarding returns if the packet forwarding between NICs is enabled.
+func (s *Stack) Forwarding() bool {
+	// TODO: Expose via /proc/sys/net/ipv4/ip_forward.
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.forwarding
 }
 
 // SetRouteTable assigns the route table to be used by this stack. It
@@ -607,6 +624,12 @@ type NICStateFlags struct {
 
 // AddAddress adds a new network-layer address to the specified NIC.
 func (s *Stack) AddAddress(id tcpip.NICID, protocol tcpip.NetworkProtocolNumber, addr tcpip.Address) *tcpip.Error {
+	return s.AddAddressWithOptions(id, protocol, addr, CanBePrimaryEndpoint)
+}
+
+// AddAddressWithOptions is the same as AddAddress, but allows you to specify
+// whether the new endpoint can be primary or not.
+func (s *Stack) AddAddressWithOptions(id tcpip.NICID, protocol tcpip.NetworkProtocolNumber, addr tcpip.Address, peb PrimaryEndpointBehavior) *tcpip.Error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -615,7 +638,7 @@ func (s *Stack) AddAddress(id tcpip.NICID, protocol tcpip.NetworkProtocolNumber,
 		return tcpip.ErrUnknownNICID
 	}
 
-	return nic.AddAddress(protocol, addr)
+	return nic.AddAddressWithOptions(protocol, addr, peb)
 }
 
 // AddSubnet adds a subnet range to the specified NIC.
@@ -703,7 +726,7 @@ func (s *Stack) FindRoute(id tcpip.NICID, localAddr, remoteAddr tcpip.Address, n
 
 		var ref *referencedNetworkEndpoint
 		if len(localAddr) != 0 {
-			ref = nic.findEndpoint(netProto, localAddr)
+			ref = nic.findEndpoint(netProto, localAddr, CanBePrimaryEndpoint)
 		} else {
 			ref = nic.primaryEndpoint(netProto)
 		}
@@ -746,7 +769,7 @@ func (s *Stack) CheckLocalAddress(nicid tcpip.NICID, protocol tcpip.NetworkProto
 			return 0
 		}
 
-		ref := nic.findEndpoint(protocol, addr)
+		ref := nic.findEndpoint(protocol, addr, CanBePrimaryEndpoint)
 		if ref == nil {
 			return 0
 		}
@@ -758,7 +781,7 @@ func (s *Stack) CheckLocalAddress(nicid tcpip.NICID, protocol tcpip.NetworkProto
 
 	// Go through all the NICs.
 	for _, nic := range s.nics {
-		ref := nic.findEndpoint(protocol, addr)
+		ref := nic.findEndpoint(protocol, addr, CanBePrimaryEndpoint)
 		if ref != nil {
 			ref.decRef()
 			return nic.id
@@ -925,4 +948,15 @@ func (s *Stack) RemoveTCPProbe() {
 	s.mu.Lock()
 	s.tcpProbeFunc = nil
 	s.mu.Unlock()
+}
+
+// JoinGroup joins the given multicast group on the given NIC.
+func (s *Stack) JoinGroup(protocol tcpip.NetworkProtocolNumber, nicID tcpip.NICID, multicastAddr tcpip.Address) *tcpip.Error {
+	// TODO: notify network of subscription via igmp protocol.
+	return s.AddAddressWithOptions(nicID, protocol, multicastAddr, NeverPrimaryEndpoint)
+}
+
+// LeaveGroup leaves the given multicast group on the given NIC.
+func (s *Stack) LeaveGroup(protocol tcpip.NetworkProtocolNumber, nicID tcpip.NICID, multicastAddr tcpip.Address) *tcpip.Error {
+	return s.RemoveAddress(nicID, multicastAddr)
 }

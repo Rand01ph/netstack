@@ -184,19 +184,24 @@ func (e *endpoint) LinkAddress() tcpip.LinkAddress {
 
 // WritePacket writes outbound packets to the file descriptor. If it is not
 // currently writable, the packet is dropped.
-func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload buffer.VectorisedView, protocol tcpip.NetworkProtocolNumber) *tcpip.Error {
+func (e *endpoint) WritePacket(r *stack.Route, hdr buffer.Prependable, payload buffer.VectorisedView, protocol tcpip.NetworkProtocolNumber) *tcpip.Error {
 	// Add the ethernet header here.
 	eth := header.Ethernet(hdr.Prepend(header.EthernetMinimumSize))
-	eth.Encode(&header.EthernetFields{
+	ethHdr := &header.EthernetFields{
 		DstAddr: r.RemoteLinkAddress,
-		SrcAddr: e.addr,
 		Type:    protocol,
-	})
+	}
+	if r.LocalLinkAddress != "" {
+		ethHdr.SrcAddr = r.LocalLinkAddress
+	} else {
+		ethHdr.SrcAddr = e.addr
+	}
+	eth.Encode(ethHdr)
 
 	v := payload.ToView()
 	// Transmit the packet.
 	e.mu.Lock()
-	ok := e.tx.transmit(hdr.UsedBytes(), v)
+	ok := e.tx.transmit(hdr.View(), v)
 	e.mu.Unlock()
 
 	if !ok {
@@ -227,8 +232,6 @@ func (e *endpoint) dispatchLoop(d stack.NetworkDispatcher) {
 
 	// Read in a loop until a stop is requested.
 	var rxb []queue.RxBuffer
-	views := []buffer.View{nil}
-	vv := buffer.NewVectorisedView(0, views)
 	for atomic.LoadUint32(&e.stopRequested) == 0 {
 		var n uint32
 		rxb, n = e.rx.postAndReceive(rxb, &e.stopRequested)
@@ -250,9 +253,7 @@ func (e *endpoint) dispatchLoop(d stack.NetworkDispatcher) {
 
 		// Send packet up the stack.
 		eth := header.Ethernet(b)
-		views[0] = b[header.EthernetMinimumSize:]
-		vv.SetSize(int(n) - header.EthernetMinimumSize)
-		d.DeliverNetworkPacket(e, eth.SourceAddress(), eth.Type(), &vv)
+		d.DeliverNetworkPacket(e, eth.SourceAddress(), eth.DestinationAddress(), eth.Type(), buffer.View(b[header.EthernetMinimumSize:]).ToVectorisedView())
 	}
 
 	// Clean state.
