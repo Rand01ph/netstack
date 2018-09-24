@@ -44,10 +44,6 @@ const (
 
 	// buckets is the number of identifier buckets.
 	buckets = 2048
-
-	// defaultIPv4TTL is the defautl TTL for IPv4 Packets egressed by
-	// Netstack.
-	defaultIPv4TTL = 255
 )
 
 type address [header.IPv4AddressSize]byte
@@ -78,6 +74,11 @@ func newEndpoint(nicid tcpip.NICID, addr tcpip.Address, dispatcher stack.Transpo
 	return e
 }
 
+// DefaultTTL is the default time-to-live value for this endpoint.
+func (e *endpoint) DefaultTTL() uint8 {
+	return 255
+}
+
 // MTU implements stack.NetworkEndpoint.MTU. It returns the link-layer MTU minus
 // the network layer max header length.
 func (e *endpoint) MTU() uint32 {
@@ -106,7 +107,7 @@ func (e *endpoint) MaxHeaderLength() uint16 {
 }
 
 // WritePacket writes a packet to the given destination address and protocol.
-func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload buffer.VectorisedView, protocol tcpip.TransportProtocolNumber) *tcpip.Error {
+func (e *endpoint) WritePacket(r *stack.Route, hdr buffer.Prependable, payload buffer.VectorisedView, protocol tcpip.TransportProtocolNumber, ttl uint8) *tcpip.Error {
 	ip := header.IPv4(hdr.Prepend(header.IPv4MinimumSize))
 	length := uint16(hdr.UsedLength() + payload.Size())
 	id := uint32(0)
@@ -120,7 +121,7 @@ func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload 
 		IHL:         header.IPv4MinimumSize,
 		TotalLength: length,
 		ID:          uint16(id),
-		TTL:         defaultIPv4TTL,
+		TTL:         ttl,
 		Protocol:    uint8(protocol),
 		SrcAddr:     r.LocalAddress,
 		DstAddr:     r.RemoteAddress,
@@ -133,7 +134,7 @@ func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload 
 
 // HandlePacket is called by the link layer when new ipv4 packets arrive for
 // this endpoint.
-func (e *endpoint) HandlePacket(r *stack.Route, vv *buffer.VectorisedView) {
+func (e *endpoint) HandlePacket(r *stack.Route, vv buffer.VectorisedView) {
 	h := header.IPv4(vv.First())
 	if !h.IsValid(vv.Size()) {
 		return
@@ -148,11 +149,11 @@ func (e *endpoint) HandlePacket(r *stack.Route, vv *buffer.VectorisedView) {
 	if more || h.FragmentOffset() != 0 {
 		// The packet is a fragment, let's try to reassemble it.
 		last := h.FragmentOffset() + uint16(vv.Size()) - 1
-		tt, ready := e.fragmentation.Process(hash.IPv4FragmentHash(h), h.FragmentOffset(), last, more, vv)
+		var ready bool
+		vv, ready = e.fragmentation.Process(hash.IPv4FragmentHash(h), h.FragmentOffset(), last, more, vv)
 		if !ready {
 			return
 		}
-		vv = &tt
 	}
 	p := h.TransportProtocol()
 	if p == header.ICMPv4ProtocolNumber {

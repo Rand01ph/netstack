@@ -123,16 +123,11 @@ func (e ErrSaveRejection) Error() string {
 // time, but never for netstack internal timekeeping.
 type Clock interface {
 	// NowNanoseconds returns the current real time as a number of
-	// nanoseconds since some epoch.
+	// nanoseconds since the Unix epoch.
 	NowNanoseconds() int64
-}
 
-// StdClock implements Clock with the time package.
-type StdClock struct{}
-
-// NowNanoseconds implements Clock.NowNanoseconds.
-func (*StdClock) NowNanoseconds() int64 {
-	return time.Now().UnixNano()
+	// NowMonotonic returns a monotonic time value.
+	NowMonotonic() int64
 }
 
 // Address is a byte slice cast as a string that represents the address of a
@@ -205,6 +200,11 @@ func (s *Subnet) Prefix() int {
 		}
 	}
 	return len(s.mask) * 8
+}
+
+// Mask returns the subnet mask.
+func (s *Subnet) Mask() AddressMask {
+	return s.mask
 }
 
 // NICID is a number that uniquely identifies a NIC.
@@ -453,6 +453,28 @@ type KeepaliveIntervalOption time.Duration
 // closed.
 type KeepaliveCountOption int
 
+// MulticastTTLOption is used by SetSockOpt/GetSockOpt to control the default
+// TTL value for multicast messages. The default is 1.
+type MulticastTTLOption uint8
+
+// MembershipOption is used by SetSockOpt/GetSockOpt as an argument to
+// AddMembershipOption and RemoveMembershipOption.
+type MembershipOption struct {
+	NIC           NICID
+	InterfaceAddr Address
+	MulticastAddr Address
+}
+
+// AddMembershipOption is used by SetSockOpt/GetSockOpt to join a multicast
+// group identified by the given multicast address, on the interface matching
+// the given interface address.
+type AddMembershipOption MembershipOption
+
+// RemoveMembershipOption is used by SetSockOpt/GetSockOpt to leave a multicast
+// group identified by the given multicast address, on the interface matching
+// the given interface address.
+type RemoveMembershipOption MembershipOption
+
 // Route is a row in the routing table. It specifies through which NIC (and
 // gateway) sets of packets should be routed. A row is considered viable if the
 // masked target address matches the destination adddress in the row.
@@ -644,6 +666,43 @@ func (a Address) String() string {
 	switch len(a) {
 	case 4:
 		return fmt.Sprintf("%d.%d.%d.%d", int(a[0]), int(a[1]), int(a[2]), int(a[3]))
+	case 16:
+		// Find the longest subsequence of hexadecimal zeros.
+		start, end := -1, -1
+		for i := 0; i < len(a); i += 2 {
+			j := i
+			for j < len(a) && a[j] == 0 && a[j+1] == 0 {
+				j += 2
+			}
+			if j > i+2 && j-i > end-start {
+				start, end = i, j
+			}
+		}
+
+		var b strings.Builder
+		for i := 0; i < len(a); i += 2 {
+			if i == start {
+				b.WriteString("::")
+				i = end
+				if end >= len(a) {
+					break
+				}
+			} else if i > 0 {
+				b.WriteByte(':')
+			}
+			v := uint16(a[i+0])<<8 | uint16(a[i+1])
+			if v == 0 {
+				b.WriteByte('0')
+			} else {
+				const digits = "0123456789abcdef"
+				for i := uint(3); i < 4; i-- {
+					if v := v >> (i * 4); v != 0 {
+						b.WriteByte(digits[v&0xf])
+					}
+				}
+			}
+		}
+		return b.String()
 	default:
 		return fmt.Sprintf("%x", []byte(a))
 	}

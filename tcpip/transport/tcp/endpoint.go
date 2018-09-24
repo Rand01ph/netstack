@@ -127,7 +127,7 @@ type endpoint struct {
 
 	// hardError is meaningful only when state is stateError, it stores the
 	// error to be returned when read/write syscalls are called and the
-	// endpoint is in this state.
+	// endpoint is in this state. hardError is protected by mu.
 	hardError *tcpip.Error
 
 	// workerRunning specifies if a worker goroutine is running.
@@ -447,9 +447,10 @@ func (e *endpoint) Read(*tcpip.FullAddress) (buffer.View, tcpip.ControlMessages,
 	bufUsed := e.rcvBufUsed
 	if s := e.state; s != stateConnected && s != stateClosed && bufUsed == 0 {
 		e.rcvListMu.Unlock()
+		he := e.hardError
 		e.mu.RUnlock()
 		if s == stateError {
-			return buffer.View{}, tcpip.ControlMessages{}, e.hardError
+			return buffer.View{}, tcpip.ControlMessages{}, he
 		}
 		return buffer.View{}, tcpip.ControlMessages{}, tcpip.ErrInvalidEndpointState
 	}
@@ -1000,23 +1001,26 @@ func (e *endpoint) connect(addr tcpip.FullAddress, handshake bool, run bool) (er
 		// address/port for both local and remote (otherwise this
 		// endpoint would be trying to connect to itself).
 		sameAddr := e.id.LocalAddress == e.id.RemoteAddress
-		_, err := e.stack.PickEphemeralPort(func(p uint16) (bool, *tcpip.Error) {
+		if _, err := e.stack.PickEphemeralPort(func(p uint16) (bool, *tcpip.Error) {
 			if sameAddr && p == e.id.RemotePort {
 				return false, nil
 			}
+			if !e.stack.IsPortAvailable(netProtos, ProtocolNumber, e.id.LocalAddress, p) {
+				return false, nil
+			}
 
-			e.id.LocalPort = p
-			err := e.stack.RegisterTransportEndpoint(nicid, netProtos, ProtocolNumber, e.id, e)
-			switch err {
+			id := e.id
+			id.LocalPort = p
+			switch e.stack.RegisterTransportEndpoint(nicid, netProtos, ProtocolNumber, id, e) {
 			case nil:
+				e.id = id
 				return true, nil
 			case tcpip.ErrPortInUse:
 				return false, nil
 			default:
 				return false, err
 			}
-		})
-		if err != nil {
+		}); err != nil {
 			return err
 		}
 	}
@@ -1217,7 +1221,7 @@ func (e *endpoint) Accept() (tcpip.Endpoint, *waiter.Queue, *tcpip.Error) {
 }
 
 // Bind binds the endpoint to a specific local port and optionally address.
-func (e *endpoint) Bind(addr tcpip.FullAddress, commit func() *tcpip.Error) (retErr *tcpip.Error) {
+func (e *endpoint) Bind(addr tcpip.FullAddress, commit func() *tcpip.Error) (err *tcpip.Error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -1245,7 +1249,6 @@ func (e *endpoint) Bind(addr tcpip.FullAddress, commit func() *tcpip.Error) (ret
 		}
 	}
 
-	// Reserve the port.
 	port, err := e.stack.ReservePort(netProtos, ProtocolNumber, addr.Addr, addr.Port)
 	if err != nil {
 		return err
@@ -1257,7 +1260,7 @@ func (e *endpoint) Bind(addr tcpip.FullAddress, commit func() *tcpip.Error) (ret
 
 	// Any failures beyond this point must remove the port registration.
 	defer func() {
-		if retErr != nil {
+		if err != nil {
 			e.stack.ReleasePort(netProtos, ProtocolNumber, addr.Addr, port)
 			e.isPortReserved = false
 			e.effectiveNetProtos = nil
@@ -1323,7 +1326,7 @@ func (e *endpoint) GetRemoteAddress() (tcpip.FullAddress, *tcpip.Error) {
 
 // HandlePacket is called by the stack when new packets arrive to this transport
 // endpoint.
-func (e *endpoint) HandlePacket(r *stack.Route, id stack.TransportEndpointID, vv *buffer.VectorisedView) {
+func (e *endpoint) HandlePacket(r *stack.Route, id stack.TransportEndpointID, vv buffer.VectorisedView) {
 	s := newSegment(r, id, vv)
 	if !s.parse() {
 		e.stack.Stats().MalformedRcvdPackets.Increment()
@@ -1348,7 +1351,7 @@ func (e *endpoint) HandlePacket(r *stack.Route, id stack.TransportEndpointID, vv
 }
 
 // HandleControlPacket implements stack.TransportEndpoint.HandleControlPacket.
-func (e *endpoint) HandleControlPacket(id stack.TransportEndpointID, typ stack.ControlType, extra uint32, vv *buffer.VectorisedView) {
+func (e *endpoint) HandleControlPacket(id stack.TransportEndpointID, typ stack.ControlType, extra uint32, vv buffer.VectorisedView) {
 	switch typ {
 	case stack.ControlPacketTooBig:
 		e.sndBufMu.Lock()

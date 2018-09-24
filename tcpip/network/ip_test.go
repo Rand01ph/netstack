@@ -94,16 +94,16 @@ func (t *testObject) checkValues(protocol tcpip.TransportProtocolNumber, vv buff
 // DeliverTransportPacket is called by network endpoints after parsing incoming
 // packets. This is used by the test object to verify that the results of the
 // parsing are expected.
-func (t *testObject) DeliverTransportPacket(r *stack.Route, protocol tcpip.TransportProtocolNumber, vv *buffer.VectorisedView) {
-	t.checkValues(protocol, *vv, r.RemoteAddress, r.LocalAddress)
+func (t *testObject) DeliverTransportPacket(r *stack.Route, protocol tcpip.TransportProtocolNumber, vv buffer.VectorisedView) {
+	t.checkValues(protocol, vv, r.RemoteAddress, r.LocalAddress)
 	t.dataCalls++
 }
 
 // DeliverTransportControlPacket is called by network endpoints after parsing
 // incoming control (ICMP) packets. This is used by the test object to verify
 // that the results of the parsing are expected.
-func (t *testObject) DeliverTransportControlPacket(local, remote tcpip.Address, net tcpip.NetworkProtocolNumber, trans tcpip.TransportProtocolNumber, typ stack.ControlType, extra uint32, vv *buffer.VectorisedView) {
-	t.checkValues(trans, *vv, remote, local)
+func (t *testObject) DeliverTransportControlPacket(local, remote tcpip.Address, net tcpip.NetworkProtocolNumber, trans tcpip.TransportProtocolNumber, typ stack.ControlType, extra uint32, vv buffer.VectorisedView) {
+	t.checkValues(trans, vv, remote, local)
 	if typ != t.typ {
 		t.t.Errorf("typ = %v, want %v", typ, t.typ)
 	}
@@ -145,19 +145,19 @@ func (*testObject) LinkAddress() tcpip.LinkAddress {
 // WritePacket is called by network endpoints after producing a packet and
 // writing it to the link endpoint. This is used by the test object to verify
 // that the produced packet is as expected.
-func (t *testObject) WritePacket(_ *stack.Route, hdr *buffer.Prependable, payload buffer.VectorisedView, protocol tcpip.NetworkProtocolNumber) *tcpip.Error {
+func (t *testObject) WritePacket(_ *stack.Route, hdr buffer.Prependable, payload buffer.VectorisedView, protocol tcpip.NetworkProtocolNumber) *tcpip.Error {
 	var prot tcpip.TransportProtocolNumber
 	var srcAddr tcpip.Address
 	var dstAddr tcpip.Address
 
 	if t.v4 {
-		h := header.IPv4(hdr.UsedBytes())
+		h := header.IPv4(hdr.View())
 		prot = tcpip.TransportProtocolNumber(h.Protocol())
 		srcAddr = h.SourceAddress()
 		dstAddr = h.DestinationAddress()
 
 	} else {
-		h := header.IPv6(hdr.UsedBytes())
+		h := header.IPv6(hdr.View())
 		prot = tcpip.TransportProtocolNumber(h.NextHeader())
 		srcAddr = h.SourceAddress()
 		dstAddr = h.DestinationAddress()
@@ -221,8 +221,7 @@ func TestIPv4Send(t *testing.T) {
 	if err != nil {
 		t.Fatalf("could not find route: %v", err)
 	}
-	vv := buffer.NewVectorisedView(len(payload), []buffer.View{payload})
-	if err := ep.WritePacket(&r, &hdr, vv, 123); err != nil {
+	if err := ep.WritePacket(&r, hdr, payload.ToVectorisedView(), 123, 123); err != nil {
 		t.Fatalf("WritePacket failed: %v", err)
 	}
 }
@@ -262,9 +261,7 @@ func TestIPv4Receive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("could not find route: %v", err)
 	}
-	var views [1]buffer.View
-	vv := view.ToVectorisedView(views)
-	ep.HandlePacket(&r, &vv)
+	ep.HandlePacket(&r, view.ToVectorisedView())
 	if o.dataCalls != 1 {
 		t.Fatalf("Bad number of data calls: got %x, want 1", o.dataCalls)
 	}
@@ -296,7 +293,6 @@ func TestIPv4ReceiveControl(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			var views [1]buffer.View
 			o := testObject{t: t}
 			proto := ipv4.NewProtocol()
 			ep, err := proto.NewEndpoint(1, localIpv4Addr, nil, &o, nil)
@@ -351,9 +347,8 @@ func TestIPv4ReceiveControl(t *testing.T) {
 			o.typ = c.expectedTyp
 			o.extra = c.expectedExtra
 
-			vv := view.ToVectorisedView(views)
-			vv.CapLength(len(view) - c.trunc)
-			ep.HandlePacket(&r, &vv)
+			vv := view[:len(view)-c.trunc].ToVectorisedView()
+			ep.HandlePacket(&r, vv)
 			if want := c.expectedCount; o.controlCalls != want {
 				t.Fatalf("Bad number of control calls for %q case: got %v, want %v", c.name, o.controlCalls, want)
 			}
@@ -416,18 +411,13 @@ func TestIPv4FragmentationReceive(t *testing.T) {
 	}
 
 	// Send first segment.
-	var views1 [1]buffer.View
-	vv1 := frag1.ToVectorisedView(views1)
-	ep.HandlePacket(&r, &vv1)
+	ep.HandlePacket(&r, frag1.ToVectorisedView())
 	if o.dataCalls != 0 {
 		t.Fatalf("Bad number of data calls: got %x, want 0", o.dataCalls)
 	}
 
 	// Send second segment.
-	var views2 [1]buffer.View
-	vv2 := frag2.ToVectorisedView(views2)
-	ep.HandlePacket(&r, &vv2)
-
+	ep.HandlePacket(&r, frag2.ToVectorisedView())
 	if o.dataCalls != 1 {
 		t.Fatalf("Bad number of data calls: got %x, want 1", o.dataCalls)
 	}
@@ -460,8 +450,7 @@ func TestIPv6Send(t *testing.T) {
 	if err != nil {
 		t.Fatalf("could not find route: %v", err)
 	}
-	vv := buffer.NewVectorisedView(len(payload), []buffer.View{payload})
-	if err := ep.WritePacket(&r, &hdr, vv, 123); err != nil {
+	if err := ep.WritePacket(&r, hdr, payload.ToVectorisedView(), 123, 123); err != nil {
 		t.Fatalf("WritePacket failed: %v", err)
 	}
 }
@@ -501,10 +490,7 @@ func TestIPv6Receive(t *testing.T) {
 		t.Fatalf("could not find route: %v", err)
 	}
 
-	var views [1]buffer.View
-	vv := view.ToVectorisedView(views)
-	ep.HandlePacket(&r, &vv)
-
+	ep.HandlePacket(&r, view.ToVectorisedView())
 	if o.dataCalls != 1 {
 		t.Fatalf("Bad number of data calls: got %x, want 1", o.dataCalls)
 	}
@@ -541,7 +527,6 @@ func TestIPv6ReceiveControl(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			var views [1]buffer.View
 			o := testObject{t: t}
 			proto := ipv6.NewProtocol()
 			ep, err := proto.NewEndpoint(1, localIpv6Addr, nil, &o, nil)
@@ -609,9 +594,8 @@ func TestIPv6ReceiveControl(t *testing.T) {
 			o.typ = c.expectedTyp
 			o.extra = c.expectedExtra
 
-			vv := view.ToVectorisedView(views)
-			vv.CapLength(len(view) - c.trunc)
-			ep.HandlePacket(&r, &vv)
+			vv := view[:len(view)-c.trunc].ToVectorisedView()
+			ep.HandlePacket(&r, vv)
 			if want := c.expectedCount; o.controlCalls != want {
 				t.Fatalf("Bad number of control calls for %q case: got %v, want %v", c.name, o.controlCalls, want)
 			}
