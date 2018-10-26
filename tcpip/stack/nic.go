@@ -467,7 +467,6 @@ func (n *NIC) getRef(protocol tcpip.NetworkProtocolNumber, dst tcpip.Address) *r
 	} else {
 		id = NetworkEndpointID{dst}
 	}
-	ref, ok := n.endpoints[id]
 
 	n.mu.RLock()
 	if ref, ok := n.endpoints[id]; ok && ref.tryIncRef() {
