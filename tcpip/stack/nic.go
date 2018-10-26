@@ -415,12 +415,6 @@ func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, remoteLinkAddr, localLin
 	}
 
 	src, dst := netProto.ParseAddresses(vv.First())
-	// var id NetworkEndpointID
-	// if n.hooked {
-	// 	id = NetworkEndpointID{n.hookedAddress}
-	// } else {
-	// 	id = NetworkEndpointID{dst}
-	// }
 
 	if ref := n.getRef(protocol, dst); ref != nil {
 		r := makeRoute(protocol, dst, src, linkEP.LinkAddress(), ref)
@@ -467,7 +461,13 @@ func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, remoteLinkAddr, localLin
 }
 
 func (n *NIC) getRef(protocol tcpip.NetworkProtocolNumber, dst tcpip.Address) *referencedNetworkEndpoint {
-	id := NetworkEndpointID{dst}
+	var id NetworkEndpointID
+	if n.hooked {
+		id = NetworkEndpointID{n.hookedAddress}
+	} else {
+		id = NetworkEndpointID{dst}
+	}
+	ref, ok := n.endpoints[id]
 
 	n.mu.RLock()
 	if ref, ok := n.endpoints[id]; ok && ref.tryIncRef() {
