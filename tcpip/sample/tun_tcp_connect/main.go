@@ -1,4 +1,4 @@
-// Copyright 2018 Google Inc.
+// Copyright 2018 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -80,7 +80,7 @@ func writer(ch chan struct{}, ep tcpip.Endpoint) {
 
 		v.CapLength(n)
 		for len(v) > 0 {
-			n, err := ep.Write(tcpip.SlicePayload(v), tcpip.WriteOptions{})
+			n, _, err := ep.Write(tcpip.SlicePayload(v), tcpip.WriteOptions{})
 			if err != nil {
 				fmt.Println("Write failed:", err)
 				return

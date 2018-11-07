@@ -1,4 +1,4 @@
-// Copyright 2018 Google Inc.
+// Copyright 2018 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -153,4 +153,10 @@ func (vv VectorisedView) ToView() View {
 // Views returns the slice containing the all views.
 func (vv VectorisedView) Views() []View {
 	return vv.views
+}
+
+// Append appends the views in a vectorised view to this vectorised view.
+func (vv *VectorisedView) Append(vv2 *VectorisedView) {
+	vv.views = append(vv.views, vv2.views...)
+	vv.size += vv2.size
 }

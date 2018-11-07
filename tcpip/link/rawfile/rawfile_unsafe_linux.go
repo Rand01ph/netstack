@@ -1,4 +1,4 @@
-// Copyright 2018 Google Inc.
+// Copyright 2018 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/FlowerWrong/netstack/tcpip"
+	"github.com/google/netstack/tcpip"
 )
 
 // GetMTU determines the MTU of a network interface device.

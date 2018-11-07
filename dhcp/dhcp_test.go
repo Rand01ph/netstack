@@ -1,4 +1,4 @@
-// Copyright 2018 Google Inc.
+// Copyright 2018 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -58,7 +58,7 @@ func createStack(t *testing.T) *stack.Stack {
 
 	s.SetRouteTable([]tcpip.Route{{
 		Destination: tcpip.Address(strings.Repeat("\x00", 4)),
-		Mask:        tcpip.Address(strings.Repeat("\x00", 4)),
+		Mask:        tcpip.AddressMask(strings.Repeat("\x00", 4)),
 		Gateway:     "",
 		NIC:         nicid,
 	}})

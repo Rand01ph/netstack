@@ -1,4 +1,4 @@
-// Copyright 2018 Google Inc.
+// Copyright 2018 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -105,6 +105,18 @@ func (e *endpoint) handleICMP(r *stack.Route, vv buffer.VectorisedView) {
 		pkt[icmpV6OptOffset] = ndpOptDstLinkAddr
 		pkt[icmpV6LengthOffset] = 1
 		copy(pkt[icmpV6LengthOffset+1:], r.LocalLinkAddress[:])
+
+		// ICMPv6 Neighbor Solicit messages are always sent to
+		// specially crafted IPv6 multicast addresses. As a result, the
+		// route we end up with here has as its LocalAddress such a
+		// multicast address. It would be nonsense to claim that our
+		// source address is a multicast address, so we manually set
+		// the source address to the target address requested in the
+		// solicit message. Since that requires mutating the route, we
+		// must first clone it.
+		r := r.Clone()
+		defer r.Release()
+		r.LocalAddress = targetAddr
 		pkt.SetChecksum(icmpChecksum(pkt, r.LocalAddress, r.RemoteAddress, buffer.VectorisedView{}))
 		r.WritePacket(hdr, buffer.VectorisedView{}, header.ICMPv6ProtocolNumber, r.DefaultTTL())
 
@@ -153,13 +165,6 @@ const (
 	icmpV6LengthOffset = 25
 )
 
-// solicitedNodeAddr computes the solicited-node multicast address.
-// This is used for NDP. Described in RFC 4291.
-func solicitedNodeAddr(addr tcpip.Address) tcpip.Address {
-	const solicitedNodeMulticastPrefix = "\xff\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\xff"
-	return solicitedNodeMulticastPrefix + addr[len(addr)-3:]
-}
-
 var broadcastMAC = tcpip.LinkAddress([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
 
 var _ stack.LinkAddressResolver = (*protocol)(nil)
@@ -171,7 +176,7 @@ func (*protocol) LinkAddressProtocol() tcpip.NetworkProtocolNumber {
 
 // LinkAddressRequest implements stack.LinkAddressResolver.
 func (*protocol) LinkAddressRequest(addr, localAddr tcpip.Address, linkEP stack.LinkEndpoint) *tcpip.Error {
-	snaddr := solicitedNodeAddr(addr)
+	snaddr := header.SolicitedNodeAddr(addr)
 	r := &stack.Route{
 		LocalAddress:      localAddr,
 		RemoteAddress:     snaddr,

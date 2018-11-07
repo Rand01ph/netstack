@@ -1,4 +1,4 @@
-// Copyright 2018 Google Inc.
+// Copyright 2018 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -831,12 +831,12 @@ func (s *Stack) AddLinkAddress(nicid tcpip.NICID, addr tcpip.Address, linkAddr t
 }
 
 // GetLinkAddress implements LinkAddressCache.GetLinkAddress.
-func (s *Stack) GetLinkAddress(nicid tcpip.NICID, addr, localAddr tcpip.Address, protocol tcpip.NetworkProtocolNumber, waker *sleep.Waker) (tcpip.LinkAddress, *tcpip.Error) {
+func (s *Stack) GetLinkAddress(nicid tcpip.NICID, addr, localAddr tcpip.Address, protocol tcpip.NetworkProtocolNumber, waker *sleep.Waker) (tcpip.LinkAddress, <-chan struct{}, *tcpip.Error) {
 	s.mu.RLock()
 	nic := s.nics[nicid]
 	if nic == nil {
 		s.mu.RUnlock()
-		return "", tcpip.ErrUnknownNICID
+		return "", nil, tcpip.ErrUnknownNICID
 	}
 	s.mu.RUnlock()
 

@@ -1,4 +1,4 @@
-// Copyright 2018 Google Inc.
+// Copyright 2018 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -150,7 +150,7 @@ func main() {
 	s.SetRouteTable([]tcpip.Route{
 		{
 			Destination: tcpip.Address(strings.Repeat("\x00", len(addr))),
-			Mask:        tcpip.Address(strings.Repeat("\x00", len(addr))),
+			Mask:        tcpip.AddressMask(strings.Repeat("\x00", len(addr))),
 			Gateway:     "",
 			NIC:         1,
 		},

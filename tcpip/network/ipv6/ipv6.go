@@ -1,4 +1,4 @@
-// Copyright 2018 Google Inc.
+// Copyright 2018 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -91,7 +91,7 @@ func (e *endpoint) WritePacket(r *stack.Route, hdr buffer.Prependable, payload b
 		PayloadLength: length,
 		NextHeader:    uint8(protocol),
 		HopLimit:      ttl,
-		SrcAddr:       e.id.LocalAddress,
+		SrcAddr:       r.LocalAddress,
 		DstAddr:       r.RemoteAddress,
 	})
 	r.Stats().IP.PacketsSent.Increment()

@@ -1,4 +1,4 @@
-// Copyright 2018 Google Inc.
+// Copyright 2018 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -36,34 +36,15 @@ const (
 	linkAddr1 = tcpip.LinkAddress("\x0a\x0b\x0c\x0d\x0e\x0f")
 )
 
-// linkLocalAddr computes the default IPv6 link-local address from
-// a link-layer (MAC) address.
-func linkLocalAddr(linkAddr tcpip.LinkAddress) tcpip.Address {
-	// Convert a 48-bit MAC to an EUI-64 and then prepend the
-	// link-local header, FE80::.
-	//
-	// The conversion is very nearly:
-	//	aa:bb:cc:dd:ee:ff => FE80::Aabb:ccFF:FEdd:eeff
-	// Note the capital A. The conversion aa->Aa involves a bit flip.
-	lladdrb := [16]byte{
-		0:  0xFE,
-		1:  0x80,
-		8:  linkAddr[0] ^ 2,
-		9:  linkAddr[1],
-		10: linkAddr[2],
-		11: 0xFF,
-		12: 0xFE,
-		13: linkAddr[3],
-		14: linkAddr[4],
-		15: linkAddr[5],
-	}
-	return tcpip.Address(lladdrb[:])
-}
-
 var (
-	lladdr0 = linkLocalAddr(linkAddr0)
-	lladdr1 = linkLocalAddr(linkAddr1)
+	lladdr0 = header.LinkLocalAddr(linkAddr0)
+	lladdr1 = header.LinkLocalAddr(linkAddr1)
 )
+
+type icmpInfo struct {
+	typ header.ICMPv6Type
+	src tcpip.Address
+}
 
 type testContext struct {
 	t  *testing.T
@@ -73,7 +54,7 @@ type testContext struct {
 	linkEP0 *channel.Endpoint
 	linkEP1 *channel.Endpoint
 
-	icmpCh chan header.ICMPv6Type
+	icmpCh chan icmpInfo
 }
 
 type endpointWithResolutionCapability struct {
@@ -89,7 +70,7 @@ func newTestContext(t *testing.T) *testContext {
 		t:      t,
 		s0:     stack.New([]string{ProtocolName}, []string{ping.ProtocolName6}, stack.Options{}),
 		s1:     stack.New([]string{ProtocolName}, []string{ping.ProtocolName6}, stack.Options{}),
-		icmpCh: make(chan header.ICMPv6Type, 10),
+		icmpCh: make(chan icmpInfo, 10),
 	}
 
 	const defaultMTU = 65536
@@ -106,7 +87,7 @@ func newTestContext(t *testing.T) *testContext {
 	if err := c.s0.AddAddress(1, ProtocolNumber, lladdr0); err != nil {
 		t.Fatalf("AddAddress lladdr0: %v", err)
 	}
-	if err := c.s0.AddAddress(1, ProtocolNumber, solicitedNodeAddr(lladdr0)); err != nil {
+	if err := c.s0.AddAddress(1, ProtocolNumber, header.SolicitedNodeAddr(lladdr0)); err != nil {
 		t.Fatalf("AddAddress sn lladdr0: %v", err)
 	}
 
@@ -120,21 +101,21 @@ func newTestContext(t *testing.T) *testContext {
 	if err := c.s1.AddAddress(1, ProtocolNumber, lladdr1); err != nil {
 		t.Fatalf("AddAddress lladdr1: %v", err)
 	}
-	if err := c.s1.AddAddress(1, ProtocolNumber, solicitedNodeAddr(lladdr1)); err != nil {
+	if err := c.s1.AddAddress(1, ProtocolNumber, header.SolicitedNodeAddr(lladdr1)); err != nil {
 		t.Fatalf("AddAddress sn lladdr1: %v", err)
 	}
 
 	c.s0.SetRouteTable(
 		[]tcpip.Route{{
 			Destination: lladdr1,
-			Mask:        tcpip.Address(strings.Repeat("\xff", 16)),
+			Mask:        tcpip.AddressMask(strings.Repeat("\xff", 16)),
 			NIC:         1,
 		}},
 	)
 	c.s1.SetRouteTable(
 		[]tcpip.Route{{
 			Destination: lladdr0,
-			Mask:        tcpip.Address(strings.Repeat("\xff", 16)),
+			Mask:        tcpip.AddressMask(strings.Repeat("\xff", 16)),
 			NIC:         1,
 		}},
 	)
@@ -156,7 +137,10 @@ func (c *testContext) countPacket(pkt channel.PacketInfo) {
 	}
 	b := pkt.Header[header.IPv6MinimumSize:]
 	icmp := header.ICMPv6(b)
-	c.icmpCh <- icmp.Type()
+	c.icmpCh <- icmpInfo{
+		typ: icmp.Type(),
+		src: ipv6.SourceAddress(),
+	}
 }
 
 func (c *testContext) routePackets(ch <-chan channel.PacketInfo, ep *channel.Endpoint) {
@@ -206,7 +190,7 @@ func TestLinkResolution(t *testing.T) {
 		if ctx.Err() != nil {
 			break
 		}
-		if _, err := ep.Write(payload, tcpip.WriteOptions{To: &tcpip.FullAddress{NIC: 1, Addr: lladdr1}}); err == tcpip.ErrNoLinkAddress {
+		if _, _, err := ep.Write(payload, tcpip.WriteOptions{To: &tcpip.FullAddress{NIC: 1, Addr: lladdr1}}); err == tcpip.ErrNoLinkAddress {
 			// There's something asynchronous going on; yield to let it do its thing.
 			runtime.Gosched()
 		} else if err == nil {
@@ -222,8 +206,14 @@ func TestLinkResolution(t *testing.T) {
 		case <-ctx.Done():
 			t.Errorf("timeout waiting for ICMP, got: %#+v", stats)
 			return
-		case typ := <-c.icmpCh:
-			stats[typ]++
+		case icmpInfo := <-c.icmpCh:
+			switch icmpInfo.typ {
+			case header.ICMPv6NeighborAdvert:
+				if got, want := icmpInfo.src, lladdr1; got != want {
+					t.Errorf("got ICMPv6NeighborAdvert.sourceAddress = %v, want = %v", got, want)
+				}
+			}
+			stats[icmpInfo.typ]++
 
 			if stats[header.ICMPv6NeighborSolicit] > 0 &&
 				stats[header.ICMPv6NeighborAdvert] > 0 &&

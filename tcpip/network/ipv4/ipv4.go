@@ -1,4 +1,4 @@
-// Copyright 2018 Google Inc.
+// Copyright 2018 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -46,32 +46,29 @@ const (
 	buckets = 2048
 )
 
-type address [header.IPv4AddressSize]byte
-
 type endpoint struct {
 	nicid         tcpip.NICID
 	id            stack.NetworkEndpointID
-	address       address
 	linkEP        stack.LinkEndpoint
 	dispatcher    stack.TransportDispatcher
 	echoRequests  chan echoRequest
 	fragmentation *fragmentation.Fragmentation
 }
 
-func newEndpoint(nicid tcpip.NICID, addr tcpip.Address, dispatcher stack.TransportDispatcher, linkEP stack.LinkEndpoint) *endpoint {
+// NewEndpoint creates a new ipv4 endpoint.
+func (p *protocol) NewEndpoint(nicid tcpip.NICID, addr tcpip.Address, linkAddrCache stack.LinkAddressCache, dispatcher stack.TransportDispatcher, linkEP stack.LinkEndpoint) (stack.NetworkEndpoint, *tcpip.Error) {
 	e := &endpoint{
 		nicid:         nicid,
+		id:            stack.NetworkEndpointID{LocalAddress: addr},
 		linkEP:        linkEP,
 		dispatcher:    dispatcher,
 		echoRequests:  make(chan echoRequest, 10),
 		fragmentation: fragmentation.NewFragmentation(fragmentation.HighFragThreshold, fragmentation.LowFragThreshold, fragmentation.DefaultReassembleTimeout),
 	}
-	copy(e.address[:], addr)
-	e.id = stack.NetworkEndpointID{LocalAddress: tcpip.Address(e.address[:])}
 
 	go e.echoReplier()
 
-	return e
+	return e, nil
 }
 
 // DefaultTTL is the default time-to-live value for this endpoint.
@@ -193,11 +190,6 @@ func (p *protocol) MinimumPacketSize() int {
 func (*protocol) ParseAddresses(v buffer.View) (src, dst tcpip.Address) {
 	h := header.IPv4(v)
 	return h.SourceAddress(), h.DestinationAddress()
-}
-
-// NewEndpoint creates a new ipv4 endpoint.
-func (p *protocol) NewEndpoint(nicid tcpip.NICID, addr tcpip.Address, linkAddrCache stack.LinkAddressCache, dispatcher stack.TransportDispatcher, linkEP stack.LinkEndpoint) (stack.NetworkEndpoint, *tcpip.Error) {
-	return newEndpoint(nicid, addr, dispatcher, linkEP), nil
 }
 
 // SetOption implements NetworkProtocol.SetOption.

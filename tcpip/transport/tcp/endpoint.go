@@ -1,4 +1,4 @@
-// Copyright 2018 Google Inc.
+// Copyright 2018 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -241,6 +241,16 @@ type endpoint struct {
 	// The following are only used to assist the restore run to re-connect.
 	bindAddress       tcpip.Address
 	connectingAddress tcpip.Address
+}
+
+// StopWork halts packet processing. Only to be used in tests.
+func (e *endpoint) StopWork() {
+	e.workMu.Lock()
+}
+
+// ResumeWork resumes packet processing. Only to be used in tests.
+func (e *endpoint) ResumeWork() {
+	e.workMu.Unlock()
 }
 
 // keepalive is a synchronization wrapper used to appease stateify. See the
@@ -492,7 +502,7 @@ func (e *endpoint) readLocked() (buffer.View, *tcpip.Error) {
 }
 
 // Write writes data to the endpoint's peer.
-func (e *endpoint) Write(p tcpip.Payload, opts tcpip.WriteOptions) (uintptr, *tcpip.Error) {
+func (e *endpoint) Write(p tcpip.Payload, opts tcpip.WriteOptions) (uintptr, <-chan struct{}, *tcpip.Error) {
 	// Linux completely ignores any address passed to sendto(2) for TCP sockets
 	// (without the MSG_FASTOPEN flag). Corking is unimplemented, so opts.More
 	// and opts.EndOfRecord are also ignored.
@@ -504,15 +514,15 @@ func (e *endpoint) Write(p tcpip.Payload, opts tcpip.WriteOptions) (uintptr, *tc
 	if e.state != stateConnected {
 		switch e.state {
 		case stateError:
-			return 0, e.hardError
+			return 0, nil, e.hardError
 		default:
-			return 0, tcpip.ErrClosedForSend
+			return 0, nil, tcpip.ErrClosedForSend
 		}
 	}
 
 	// Nothing to do if the buffer is empty.
 	if p.Size() == 0 {
-		return 0, nil
+		return 0, nil, nil
 	}
 
 	e.sndBufMu.Lock()
@@ -520,20 +530,20 @@ func (e *endpoint) Write(p tcpip.Payload, opts tcpip.WriteOptions) (uintptr, *tc
 	// Check if the connection has already been closed for sends.
 	if e.sndClosed {
 		e.sndBufMu.Unlock()
-		return 0, tcpip.ErrClosedForSend
+		return 0, nil, tcpip.ErrClosedForSend
 	}
 
 	// Check against the limit.
 	avail := e.sndBufSize - e.sndBufUsed
 	if avail <= 0 {
 		e.sndBufMu.Unlock()
-		return 0, tcpip.ErrWouldBlock
+		return 0, nil, tcpip.ErrWouldBlock
 	}
 
 	v, perr := p.Get(avail)
 	if perr != nil {
 		e.sndBufMu.Unlock()
-		return 0, perr
+		return 0, nil, perr
 	}
 
 	var err *tcpip.Error
@@ -558,7 +568,7 @@ func (e *endpoint) Write(p tcpip.Payload, opts tcpip.WriteOptions) (uintptr, *tc
 		// Let the protocol goroutine do the work.
 		e.sndWaker.Assert()
 	}
-	return uintptr(l), err
+	return uintptr(l), nil, err
 }
 
 // Peek reads data without consuming it from the endpoint.

@@ -1,4 +1,4 @@
-// Copyright 2018 Google Inc.
+// Copyright 2018 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -98,6 +98,8 @@ var (
 	ErrNoLinkAddress         = &Error{msg: "no remote link address"}
 	ErrBadAddress            = &Error{msg: "bad address"}
 	ErrNetworkUnreachable    = &Error{msg: "network is unreachable"}
+	ErrMessageTooLong        = &Error{msg: "message too long"}
+	ErrNoBufferSpace         = &Error{msg: "no buffer space available"}
 )
 
 // Errors related to Subnet
@@ -136,6 +138,11 @@ type Address string
 
 // AddressMask is a bitmask for an address.
 type AddressMask string
+
+// String implements Stringer.
+func (a AddressMask) String() string {
+	return Address(a).String()
+}
 
 // Subnet is a subnet defined by its address and mask.
 type Subnet struct {
@@ -306,7 +313,12 @@ type Endpoint interface {
 	//
 	// Note that unlike io.Writer.Write, it is not an error for Write to
 	// perform a partial write.
-	Write(Payload, WriteOptions) (uintptr, *Error)
+	//
+	// For UDP and Ping sockets if address resolution is required,
+	// ErrNoLinkAddress and a notification channel is returned for the caller to
+	// block. Channel is closed once address resolution is complete (success or
+	// not). The channel is only non-nil in this case.
+	Write(Payload, WriteOptions) (uintptr, <-chan struct{}, *Error)
 
 	// Peek reads data without consuming it from the endpoint.
 	//
@@ -485,7 +497,7 @@ type Route struct {
 
 	// Mask specifies which bits of the Destination and the target address
 	// must match for this row to be viable.
-	Mask Address
+	Mask AddressMask
 
 	// Gateway is the gateway to be used if this row is viable.
 	Gateway Address

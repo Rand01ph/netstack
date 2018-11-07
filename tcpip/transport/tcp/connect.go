@@ -1,4 +1,4 @@
-// Copyright 2018 Google Inc.
+// Copyright 2018 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -365,7 +365,7 @@ func (h *handshake) resolveRoute() *tcpip.Error {
 	for {
 		switch index {
 		case wakerForResolution:
-			if err := h.ep.route.Resolve(resolutionWaker); err != tcpip.ErrWouldBlock {
+			if _, err := h.ep.route.Resolve(resolutionWaker); err != tcpip.ErrWouldBlock {
 				// Either success (err == nil) or failure.
 				return err
 			}
@@ -596,9 +596,7 @@ func sendTCP(r *stack.Route, id stack.TransportEndpointID, data buffer.Vectorise
 	if r.Capabilities()&stack.CapabilityChecksumOffload == 0 {
 		length := uint16(hdr.UsedLength() + data.Size())
 		xsum := r.PseudoHeaderChecksum(ProtocolNumber)
-		for _, v := range data.Views() {
-			xsum = header.Checksum(v, xsum)
-		}
+		xsum = header.ChecksumVV(data, xsum)
 
 		tcp.SetChecksum(^tcp.CalculateChecksum(xsum, length))
 	}
@@ -827,6 +825,13 @@ func (e *endpoint) resetKeepaliveTimer(receivedData bool) {
 	} else {
 		e.keepalive.timer.enable(e.keepalive.idle)
 	}
+}
+
+// disableKeepaliveTimer stops the keepalive timer.
+func (e *endpoint) disableKeepaliveTimer() {
+	e.keepalive.Lock()
+	e.keepalive.timer.disable()
+	e.keepalive.Unlock()
 }
 
 // protocolMainLoop is the main loop of the TCP protocol. It runs in its own
